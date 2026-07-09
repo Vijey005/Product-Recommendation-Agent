@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────
+# Product Recommendation Agent — Phase 2
+# All packages are 100% free & open-source.
+# Install: pip install -r requirements.txt
+# ─────────────────────────────────────────────────
+
+# Core LangChain ecosystem
+langchain>=0.2.0
+langchain-core>=0.2.0
+langgraph>=0.2.0
+langchain-community>=0.2.0
+
+# Google Gemini integration (free via Google AI Studio)
+langchain-google-genai>=1.0.0
+
+# ── Phase 2: Web Search ──────────────────────────
+# Tavily Search API (free tier — optimised for LLM contexts)
+tavily-python>=0.3.0
+
+# ── Phase 2: Local Vector Store (Product Intelligence Vault) ──
+# ChromaDB — persistent, disk-backed vector database (zero cloud cost)
+chromadb>=0.5.0
+
+# ── Phase 2: Local Embeddings ────────────────────
+# Runs all-MiniLM-L6-v2 completely locally — no API calls, no cost
+sentence-transformers>=3.0.0
+langchain-huggingface>=0.1.0
+langchain-chroma>=0.1.0
+
+# ── Phase 2: Web Scraping ────────────────────────
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Structured output & validation
+pydantic>=2.0.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# LangSmith observability (free developer tier — opt-in via env vars)
+langsmith>=0.1.0
+
