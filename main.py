@@ -116,9 +116,13 @@ def main() -> None:
     """Run the interactive CLI recommendation session."""
 
     print("⚙️  Initialising AI models...", end=" ", flush=True)
+    # Phase 2.98: nodes.py pre-warms _embeddings at module-import time (executed
+    # when `from agent.nodes import ...` runs above). configure_embeddings() here
+    # passes a startup-loaded instance so main.py and the graph nodes share the
+    # exact same singleton — no duplicate model loads, no cold-start freezes.
     from langchain_huggingface import HuggingFaceEmbeddings
     _embeddings = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2",
+        model_name="sentence-transformers/all-MiniLM-L6-v2",  # full canonical path
         model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True}
     )

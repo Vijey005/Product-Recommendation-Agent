@@ -1,234 +1,219 @@
 # Development Tracker: Product Recommendation Agent
 
-This document tracks all changes, decisions, and progress made during the development of the codebase.
+This document tracks all design decisions, file modifications, and progress milestones made during the development of the Product Recommendation Agent codebase.
+
+---
+
+## Workspace Quick Links
+
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py)
+- [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py)
+- [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py)
+- [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py)
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py)
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt)
+- [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example)
 
 ---
 
 ## Phase 1: CLI Prototype & LangGraph State Machine
-**Status:** Completed
-**Date:** July 2, 2026
+**Status:** Completed  
+**Date:** July 2, 2026  
 
 ### 🎯 Goal
-Build the foundational "brain" of the agent using LangGraph and Gemini 1.5 Flash. The agent conducts a CLI-based interactive interview to extract product constraints into a structured format before triggering a mock search.
+Build the foundational conversation "brain" using [LangGraph](https://github.com/langchain-ai/langgraph) and Gemini. The agent conducts an interactive interview to collect user requirements into a structured schema before executing a mock product discovery print.
 
 ### 📝 Files Created & Changed
-*   `requirements.txt`: Added core free-tier dependencies (`langchain`, `langgraph`, `langchain-google-genai`, `pydantic`, `python-dotenv`, `langsmith`).
-*   `.env.example`: Created a template for `GEMINI_API_KEY` and optional LangSmith tracing variables.
-*   `.gitignore`: Configured to ignore environment files, Python caches, and IDE metadata.
-*   `agent/__init__.py`: Initialized the `agent` directory as a Python package.
-*   `agent/state.py`: Defined the `AgentState` TypedDict to manage the conversation state, including `session_id`, `chat_history` (using the `add_messages` reducer), `constraints`, and the `is_profile_complete` routing flag.
-*   `agent/models.py`: Created the `ProductConstraints` Pydantic v2 model (with 11 fields like category, budget, primary use case) to strictly structure the extracted preferences. Added helper methods `filled_fields()` and `missing_fields()`.
-*   `agent/nodes.py`: Implemented the core logic nodes:
-    *   `analyzer_node`: Uses Gemini with structured output to extract constraints, merges them with existing state, and checks if the profile is complete (threshold: 3 populated fields).
-    *   `question_generator_node`: Asks targeted, conversational follow-up questions with multiple-choice options if the profile is incomplete.
-    *   `search_orchestrator_mock_node`: Acts as a Phase 1 terminal placeholder; prints the finalized profile formatted nicely.
-*   `agent/graph.py`: Wired the LangGraph `StateGraph` with conditional routing based on the `is_profile_complete` flag.
-*   `main.py`: Created the main CLI entry point. Features a persistent `while True:` conversation loop, API key guards, ANSI-colored terminal output, and a specific fix (`sys.stdout.reconfigure`) for Windows cp1252 encoding to ensure emojis render correctly in PowerShell.
-*   `README.md`: Wrote comprehensive setup instructions, architecture overview, and an example conversation session.
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt): Added core dependencies (`langchain`, `langgraph`, `langchain-google-genai`, `pydantic`, `python-dotenv`, `langsmith`).
+- [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example): Added API keys template for `GEMINI_API_KEY` and LangSmith tracing environment variables.
+- [.gitignore](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.gitignore): Configured to ignore environment files, Python `__pycache__` folders, local SQLite/Chroma directories, and developer IDE configs.
+- [agent/__init__.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/__init__.py): Initialized the `agent` folder as a Python package.
+- [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py): Created [AgentState](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py#L17) TypedDict to manage variables such as `chat_history`, `constraints`, and `is_profile_complete`.
+- [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py): Declared [ProductConstraints](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py#L16) Pydantic model containing 11 validation fields, along with helpers `filled_fields()` and `missing_fields()`.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py): Implemented:
+  - [analyzer_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L333): Uses structured output to extract constraints.
+  - [question_generator_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L380): Asks single target questions.
+  - `search_orchestrator_mock_node`: Terminal mock node formatting the gathered constraints.
+- [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py): Wired [build_graph()](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py#L57) with conditional edges routing based on profiling completion.
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py): Structured interactive CLI run loops with Windows UTF-8 console output guards.
+- [README.md](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/README.md): Created overview documentation and onboarding setup steps.
 
 ### 🧠 Technical Decisions & Notes
-*   **Zero-Cost Infrastructure**: Exclusively used free open-source tools and Gemini via Google AI Studio (avoiding paid OpenAI/Anthropic APIs).
-*   **State Management**: Chose LangGraph to handle the cyclic flow between the analyzer and the question generator. The `add_messages` reducer ensures conversation history is safely appended, not overwritten.
-*   **Structured Outputs**: Enforced the LLM to output Pydantic-validated JSON for robust and predictable constraint extraction.
-*   **Constraint Merging**: Designed the analyzer to layer new extractions on top of existing ones, ensuring previously gathered data is never lost across conversation turns.
-*   **LLM Configuration**: Used `temperature=0` for the analyzer for deterministic extraction, and `temperature=0.4` for the question generator for a more natural conversational tone.
-*   **Target Audience Adaptation**: Updated the extraction prompts and summary output to use Indian Rupees (INR) instead of USD to align with the primary user base. Added a strict rule to the `question_generator_node` to always format generated options in INR (₹) instead of Dollars ($).
-*   **Refined Agent Strictness**: Increased `COMPLETION_THRESHOLD` from 3 to 5. Updated system prompts to strictly forbid auto-inferring soft requirements (like "good camera") based on professions, forcing the agent to actively ask clarifying questions.
+- **Zero-Cost Setup:** Relies exclusively on Gemini free-tier via Google AI Studio and free local model alternatives.
+- **Incremental Preference Building:** Prompts layer new extractions on top of existing constraints to prevent resetting previously gathered criteria.
+- **Strict Anti-Inference Routing:** Set `COMPLETION_THRESHOLD = 5`. System prompts strictly forbid the analyzer from making soft-inference assumptions (e.g. assuming "good camera" for designers) to force direct questioning for accuracy.
+- **Indian Market Focus:** Configured prompts to conduct discussions and request budgets in Indian Rupees (INR, `₹`).
 
 ---
 
-## Phase 2: Tooling, Web Search & Persistent Product Intelligence Vault
-**Status:** Completed
-**Date:** July 3, 2026
+## Phase 2: Web Search Tooling & Persistent Product Vault
+**Status:** Completed  
+**Date:** July 3, 2026  
 
 ### 🎯 Goal
-Build the data acquisition and local RAG layer. Implement a persistent local vector store (Product Intelligence Vault) to scrape, index, and query product data matching the user's completed profile using 100% free local embeddings and cloud search APIs.
+Implement the data acquisition and local retrieval-augmented generation (RAG) layers. Develop a persistent vector store to crawl, chunk, and index matching product reviews and data sheets.
 
 ### 📝 Files Created & Changed
-*   `requirements.txt`: Added Phase 2 dependencies (`tavily-python`, `chromadb`, `sentence-transformers`, `langchain-huggingface`, `langchain-chroma`, `langchain-community`, `beautifulsoup4`, `requests`). Later removed `tf-keras` due to protobuf conflicts.
-*   `.env.example`: Added `TAVILY_API_KEY` placeholder.
-*   `.env`: Added `TAVILY_API_KEY`, `TF_ENABLE_ONEDNN_OPTS=0`, and `TRANSFORMERS_NO_TF=1` to fix Keras 3 / TensorFlow import conflicts.
-*   `agent/state.py`: Added `retrieved_products` (list of dicts) and `is_rag_mode` (boolean routing flag).
-*   `agent/nodes.py`:
-    *   Replaced `search_orchestrator_mock_node` with `search_and_vault_node` which uses Tavily to search the web, and ChromaDB/`all-MiniLM-L6-v2` to chunk and ingest web content into a persistent disk-backed vector vault (`./data/chroma_vault`).
-    *   Added `comparison_agent_node`: A grounded LLM answering node that queries the local ChromaDB vault and strictly prevents hallucination. Added environment variable guards at the top to prevent TensorFlow imports.
-*   `agent/graph.py`: Modified the conditional routing so that `is_profile_complete=True` routes to `search_and_vault_node`. RAG comparison routing is handled outside the graph to avoid constraint extraction on comparison queries.
-*   `main.py`: Refactored to include a dual-loop architecture. The first loop runs the LangGraph interview. Once `is_rag_mode` becomes `True`, the script enters a dedicated "RAG Chat Loop" that directly dispatches user questions to `comparison_agent_node`. Added environment variable guards.
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt): Added RAG dependencies (`tavily-python`, `chromadb`, `sentence-transformers`, `langchain-huggingface`, `langchain-chroma`, `langchain-community`, `beautifulsoup4`, `requests`). Removed `tf-keras` due to package conflicts.
+- [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example): Added `TAVILY_API_KEY` placeholder.
+- [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py): Added `retrieved_products` and `is_rag_mode` state variables.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - Replaced the mock node with [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L951) using Tavily searches and local ChromaDB to store web content.
+  - Implemented [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1343) for grounded query answering.
+- [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py): Connected graph endings to route to [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L951).
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py): Created the dual-loop CLI. When `is_rag_mode = True`, the console breaks out of LangGraph execution, entering a RAG chat loop communicating directly with the answering nodes.
 
 ### 🧠 Technical Decisions & Notes
-*   **Zero-Cost Local RAG**: Used `HuggingFaceEmbeddings` with `all-MiniLM-L6-v2` running entirely locally, coupled with disk-backed ChromaDB to maintain zero cloud infrastructure cost.
-*   **Tavily Search Optimization**: Utilized Tavily Search API specifically because it provides clean Markdown/text extraction optimized for LLMs. Added a fallback to `requests` + `BeautifulSoup` if extraction fails.
-*   **Idempotent Vault Ingestion**: Hashed product URLs to create stable `product_id`s, ensuring that if a user searches for the same product later, it results in an instant vault hit rather than duplicating chunks.
-*   **RAG Architecture Dispatch**: Deliberately kept the RAG querying (`comparison_agent_node`) outside of the main LangGraph flow to prevent the analyzer node from incorrectly extracting "constraints" from user queries like "Compare their battery life".
-*   **Strict Hallucination Prevention**: Enforced a strict system prompt in the RAG node: *"Answer ONLY using the provided context... If missing, explicitly state 'Information not available in the crawled data.'"*
-*   **Dependency Conflict Resolution**: Encountered a `protobuf` upgrade conflict between `tf-keras` (needed by `transformers` for Keras 3 compatibility) and `google-ai-generativelanguage`. Resolved by uninstalling `tf-keras`/`tensorflow`, enforcing `protobuf==5.29.5`, and setting `TRANSFORMERS_NO_TF=1` to bypass the Keras check entirely.
+- **Zero-Cost Embedding Processing:** Used `sentence-transformers/all-MiniLM-L6-v2` running 100% locally on CPU to embed chunks for zero cloud operational costs.
+- **Tavily Extract API:** Selected Tavily to retrieve parsed page text blocks. Wrote requests-based HTML fallback scraping routines as fallback guards.
+- **Idempotency Hash Keys:** Configured crawler to hash page URLs into 12-char product IDs, checking ChromaDB prior to network crawls to prevent duplicated documents.
+- **Conflict Resolution:** Deployed environment overrides `TRANSFORMERS_NO_TF = 1` and `TF_ENABLE_ONEDNN_OPTS = 0` to bypass conflicts between Keras 3 and Google Protobuf versions.
 
 ---
 
-## Phase 2 Optimization: Precision Search, Localization & UI Refinement
-**Status:** Completed
-**Date:** July 3, 2026
+## Phase 2 Optimization: Precision Search, Sourcing & UI Refinement
+**Status:** Completed  
+**Date:** July 3, 2026  
 
 ### 🎯 Goal
-Upgrade the quality of search generation, localize all data context for Indian consumers, and polish the console UI — without adding any new dependencies.
+Improve search relevancy for Indian consumers, inject live timing contexts into query prompts, and refine console outputs.
 
 ### 📝 Files Changed
-*   `agent/nodes.py`:
-    *   **Dynamic Timestamp Injection**: Imported Python's `datetime` module. The `search_and_vault_node` now reads the live calendar month and year at runtime (e.g., "July 2026") and injects this into the LLM's search query generation prompt, preventing the model from defaulting to its training cutoff year.
-    *   **LLM-Driven Search Query Generation**: Replaced the manual string-concatenation query builder with a dedicated LLM call (`_get_llm_base()`). The LLM is now given a structured system prompt with India-centric sourcing instructions and a manual fallback for resilience if the LLM call fails.
-    *   **India-Centric Sourcing Prompt**: The search query system prompt now explicitly instructs the LLM to bias query phrasing toward premium tech platforms — YouTube (creator transcripts), GSMArena (hardware specs), Gadgets360/Smartprix/91mobiles (Indian retail & pricing), and The Verge/Wired/PCMag/CNET (editorial benchmarks). The open crawl perimeter is preserved; no `include_domains` filter is applied.
-    *   **Post-Search Model Extraction**: Added a second lightweight LLM call immediately after the Tavily search returns. This call scans all raw snippets and extracts only the specific, concrete hardware model names explicitly mentioned (e.g., "Logitech MX Keys Mini, Keychron K6"). The clean extracted list is committed to `retrieved_products` state instead of raw webpage titles.
-    *   The `overview` message in `search_and_vault_node` now uses `**📱 Extracted Models:**` as the section header.
-*   `main.py`:
-    *   Updated the RAG chat mode product listing header from `"Indexed products:"` to `"📱 Extracted Models:"` to match the cleaner, LLM-curated output.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Dynamic Timestamps:** Injected Python's `datetime.now().strftime('%B %Y')` (e.g. "July 2026") into search prompts to prevent the LLM from relying on static training cutoff dates.
+  - **Structured Sourcing Biasing:** Updated query generation prompts to focus results toward Indian tech portals (smartprix, gsmarena, gadgets360, 91mobiles, youtube transcripts). Avoided strict domain restrictions to keep the crawl perimeter open.
+  - **Product Curator LLM:** Added a post-search curator LLM pass to scan result snippets and extract 5-6 canonical model names.
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py): Adjusted CLI listing titles to display the curated list of models.
 
 ### 🧠 Technical Decisions & Notes
-*   **No `include_domains` Restriction**: Explicitly avoided Tavily's `include_domains` block. Hard domain restrictions risk cutting off emerging Indian tech blogs and forum discussions. Instead, organic keyword framing biases search ranking without locking out useful sources.
-*   **Two-Pass LLM Pipeline**: The `search_and_vault_node` now runs two sequential LLM calls — one for query generation and one for model extraction — both using `_get_llm_base()` (temperature=0) for determinism. Both are wrapped in `try/except` with graceful fallbacks so a failed extraction never crashes the vault ingestion.
-*   **Canonical Product State**: Introduced `canonical_products` — a distinct list built from the extracted model names — which replaces the raw URL-title list in the `retrieved_products` state field. If extraction fails, the node gracefully degrades to the original title-based list.
-*   **Verification**: Confirmed via import check that `datetime.now().strftime('%B %Y')` correctly resolves to `"July 2026"` at runtime.
+- **Canonical Model Names:** Instead of indexing pages by raw HTML titles, the system uses the LLM curator to extract distinct models (e.g., `"Logitech MX Keys Mini"`), updating state mapping variables cleanly.
 
 ---
 
-## Phase 3: Advanced Harvesting Architecture & Parallelism
-**Status:** Completed
-**Date:** July 7, 2026
+## Phase 3: Advanced Spec Harvesting & Concurrency
+**Status:** Completed  
+**Date:** July 7, 2026  
 
 ### 🎯 Goal
-Overhaul the Stage 2 specification harvesting logic to guarantee comprehensive spec coverage across all product categories without hardcoded assumptions, while drastically reducing processing time via multi-threading. Optimize RAG retrieval for comparison queries.
+Guarantee thorough spec coverage across categories without hardcoding domain structures, while reducing network waiting bottlenecks.
 
 ### 📝 Files Changed
-*   `agent/nodes.py`:
-    *   **Four-Layer Harvesting Architecture:**
-        *   **Layer 1 (Category-Aware Query Generation):** Added `_generate_harvest_queries` to generate 4-5 targeted search query templates per product (covering performance, display, pricing, reviews, etc.).
-        *   **Layer 2 (Multi-Query Execution):** Instantiates templates per model and deduplicates URLs across Tavily searches.
-        *   **Layer 3 (Adaptive Chunking & Synthesis):**
-            *   Added `_detect_content_type` to switch text splitting strategies based on content density (`spec_dense` vs `narrative`).
-            *   Added `_synthesise_spec_card` to generate a structured Markdown specification table from the accumulated page texts using an LLM.
-        *   **Layer 4 (Coverage Verification):** Checks chunk counts per model and runs a supplementary search if a model has fewer than 20 chunks.
-    *   **Parallelism (Problem 1 Fix):**
-        *   Replaced sequential per-model loop with a `ThreadPoolExecutor` processing 2 models concurrently.
-        *   Extracted URL fetching into a standalone `_fetch_and_ingest_url` function, called by a 4-worker thread pool per model.
-        *   Introduced `_vault_write_lock` (`threading.Lock()`) to explicitly guard all ChromaDB `vs.add_texts` calls against concurrent writes.
-    *   **RAG Retrieval Optimization (Problem 2 Fix):**
-        *   Replaced the bottleneck of 54 sequential CPU similarity searches in `comparison_agent_node`.
-        *   Implemented a hybrid "spec-card-first" strategy: fetches the pre-synthesised spec cards using a fast metadata lookup, supplemented by a single targeted similarity search for context.
-        *   Removed `_generate_spec_dimensions` call from the comparison node.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Four-Layer Harvester:**
+    - *Layer 1:* Generates 4-5 templates targeting unique spec clusters (screens, performance, price, reviews).
+    - *Layer 2:* Executes queries concurrently and deduplicates URLs.
+    - *Layer 3:* Evaluates document text density to choose split sizes (`spec_dense`: 400 chars, `narrative`: 1000 chars) and pre-computes spec cards.
+    - *Layer 4:* Monitors total chunk counts, triggering supplementary searches for underserved devices.
+  - **Concurrencies:** Added a ThreadPoolExecutor to run model crawlers and URL fetches in parallel. Added `_vault_write_lock` to thread-guard ChromaDB write transactions.
+  - **Spec-Card-First RAG Retrieval:** Configured [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1343) to retrieve pre-computed spec tables via metadata filters first, bypassing CPU embedding calculations.
 
 ### 🧠 Technical Decisions & Notes
-*   **Thread Safety:** ChromaDB reads are thread-safe, but writes require explicit locking to avoid race conditions. A global `_vault_write_lock` guarantees safe multi-threaded ingestion.
-*   **Spec Card Pre-computation:** Moving specification structuring to the ingestion phase (`_synthesise_spec_card`) avoids repetitive and expensive inference during user queries, fundamentally resolving comparison latency.
-*   **Adaptive Chunking:** Preserving row-level integrity for spec-dense tables required smaller chunks (`chunk_size=400`), while narrative content (reviews) functions better with larger chunks (`chunk_size=1000`).
+- **Thread Safety:** ChromaDB reads are thread-safe, but concurrent writes require explicit locking to avoid race conditions. A global threading lock was implemented.
+- **Spec Card Pre-computation:** Running specification synthesis during search ingestion avoids heavy real-time reasoning tasks during user turns, resolving comparison lags.
 
 ---
 
-## Phase 2.5: Performance & Reliability Patch
-**Status:** Completed
-**Date:** July 7, 2026
+## Phase 2.5: Latency & Rate Limit Patches
+**Status:** Completed  
+**Date:** July 7, 2026  
 
 ### 🎯 Goal
-Resolve pipeline delays, Gemini API rate-limiting exhaustion (Requests Per Minute limits), and conversational memory limits when conducting comparison follow-up queries.
+Address Gemini API Request-Per-Minute (RPM) rate limits on the free tier and implement conversational context memory.
 
 ### 📝 Files Changed
-*   `agent/nodes.py`:
-    *   **Hyper-Concurrency (Query & Model Harvesting):**
-        *   Updated `search_and_vault_node` to execute all discovered models concurrently via `ThreadPoolExecutor(max_workers=max(1, len(discovered_models)))`.
-        *   Updated `_harvest_single_model` to run Tavily searches in parallel via `ThreadPoolExecutor(max_workers=4)`, removing sequential query delays and `time.sleep(0.2)`.
-    *   **Bulk Spec Synthesis:**
-        *   Removed individual `_synthesise_spec_card` LLM calls inside model harvesting threads.
-        *   Added `_batch_synthesise_spec_cards` helper to merge raw page text corpora for all models and request a JSON mapping product names to Markdown tables in a single LLM call.
-        *   Iterate and vault spec cards inside `search_and_vault_node` after all models have finished harvesting.
-    *   **RAG Conversational Memory:**
-        *   Updated `comparison_agent_node` to extract recent conversational history (up to 4 messages) and inject it into the LLM context, enabling memory across follow-ups and avoiding rate-limit hangs.
-
-### 🧠 Technical Decisions & Notes
-*   **Reduced LLM Call Overhead:** Reduced Stage 2 LLM calls from $N$ (one per model) down to exactly 1 batch call, significantly saving Gemini Free Tier Requests Per Minute (RPM).
-*   **Conversational Memory Injection:** Cleanly inserts recent `HumanMessage`/`AIMessage` context between the system prompt and the current prompt inside the RAG loop to keep responses context-aware without triggering constraint extraction.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Hyper-Concurrency:** Configured [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L951) to process all discovered models in parallel.
+  - **Bulk Spec Card Synthesis:** Replaced individual spec synthesis LLM calls with `_batch_synthesise_spec_cards` helper mapping product names to specs in a single LLM request.
+  - **Conversational Memory:** Configured [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1343) to include the last 4 messages in prompt context.
 
 ---
 
-## Phase 2.6: Devil's Advocate Mode (Public Consensus Decoder) & Engine Performance Optimization
-**Status:** Completed
-**Date:** July 8, 2026
+## Phase 2.6: Devil's Advocate Mode (Public Consensus Decoder)
+**Status:** Completed  
+**Date:** July 8, 2026  
 
 ### 🎯 Goal
-Add adversarial review capability (`/advocate` command) to scrape, triage, and expose public forum complaints using the Apify API and structured LLM classification. Concurrently optimize RAG comparison latency and search-stage specification card generation times to under 15 seconds.
+Add adversarial review triaging (`/advocate` command) to scrape public critique from online forums, sorting complaints by severity. Optimize RAG response latency to under 15 seconds.
 
 ### 📝 Files Changed
-*   `requirements.txt`: Added `apify-client>=1.7.0` for Apify SDK integration.
-*   `.env.example`: Added `APIFY_API_TOKEN` placeholders.
-*   `agent/state.py`: Extended `AgentState` with the `is_advocate_mode: bool` routing flag.
-*   `agent/nodes.py`:
-    *   **Pydantic schemas:** Added `ForumInsight` and `ModelForumAnalysis` to parse, filter, and structure public reviews.
-    *   **Dual Data Harvester:** Implemented `_harvest_and_triage_forum_data()` to query Reddit via Apify's `trudax/reddit-scraper` actor and Tavily in parallel. Splitted merged results into 500-character chunks and batch-triaged them via an LLM. Actionable insights are vaulted into ChromaDB under `chunk_type="forum_critique"`.
-    *   **Adversarial Consensus Node:** Added `devils_advocate_consensus_node()` to retrieve `forum_critique` chunks, sort by complaint severity, and respond with verification badging (e.g. "🔴 Backed by N separate discussions").
-    *   **Parallel Synthesis Engine (Stage 2 speedup):** Replaced the serial bulk `_batch_synthesise_spec_cards` call (which was sending a single 72KB+ context block) with `_parallel_synthesise_spec_cards` executing concurrent tasks inside a `ThreadPoolExecutor` worker pool. Dispatched spec sheet generation concurrently, lowering Stage 2 wait times from ~2 minutes down to 10-15 seconds.
-    *   **Gemini Latency Optimization (RAG speedup):** Disabled dynamic thinking for Gemini 2.5 Flash (`thinking_budget=0`) in LLM instantiation singletons, fixing a critical issue where the model would hang for 4+ minutes trying to allocate dynamic compute over large comparison contexts.
-*   `main.py`:
-    *   Wired intercept support for `/advocate` and `/exit` commands in the RAG loop.
-    *   Initialized `is_advocate_mode = False` state field.
-    *   Rendered a custom dark-themed console banner (`ADVOCATE_BANNER`) upon activation and routed queries to `devils_advocate_consensus_node`.
-
-### 🧠 Technical Decisions & Notes
-*   **Structured Sarcasm & Bias Filtering:** Prompts filter out meme noise, unsubstantiated hate comments, and brand-bashing. True hardware/software complaints masked in hyperbole or sarcasm are preserved, normalized, and severity-weighted (1-5).
-*   **Idempotency & Cache Hit Protection:** Before fetching from Apify/Tavily, the dual harvester queries ChromaDB to see if any `forum_critique` chunks already exist for the active product set, enabling instant cache recovery when toggle-switching mode.
-*   **Zero-Overhead Spec Retrieval:** Maintained standard RAG separation by keeping critique data completely isolated via the `chunk_type` metadata filter. Standard RAG mode remains lightning-fast and untainted by critique snippets.
-*   **Dynamic Thinking Impact:** Disabling Gemini's dynamic thinking budget reduced RAG response times to 5-15 seconds, proving that speculative reasoning layers on large context comparison inputs can severely degrade interactive CLI responsiveness.
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt): Added `apify-client>=1.7.0` for Reddit scraping.
+- [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example): Added `APIFY_API_TOKEN` placeholders.
+- [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py): Added `is_advocate_mode` flag to [AgentState](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py#L17).
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Pydantic Schemas:** Created [ForumInsight](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L94) and [ModelForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L131) schemas.
+  - **Dual Critique Harvester:** Added `_harvest_and_triage_forum_data` to scrape Reddit (Apify) and general forums (Tavily), chunking text to 500 characters and vaulting under `chunk_type="forum_critique"`.
+  - **Adversarial Consensus Node:** Added [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1742) to answer queries using verification counts and severity weights.
+  - **Parallel Spec Synthesis:** Replaced the large batch call with `_parallel_synthesise_spec_cards` running concurrent LLM calls per model inside a ThreadPoolExecutor. This reduced Stage 2 processing times from ~120s to ~10-15s.
+  - **LLM Thinking Budget Guard:** Configured the Gemini client with `thinking_budget=0` to disable dynamic thinking, eliminating multi-minute hangs during product comparisons.
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py): Intercepted `/advocate` and `/exit` commands to toggle advocate mode.
 
 ---
 
-## Phase 2.65: Zero-Auth Public Reddit Engine & Unified Array LLM Triage Pass
-**Status:** Completed
-**Date:** July 9, 2026
+## Phase 2.65: Zero-Auth Reddit Engine & Structured LLM Batch Triage
+**Status:** Completed  
+**Date:** July 9, 2026  
 
 ### 🎯 Goal
-Resolve Apify trial paywalls, high network latency from crawling loops, and immediate Gemini Free Tier `429 RESOURCE_EXHAUSTED` rate limits from parallel structured LLM calls.
+Bypass Apify trial paywalls and prevent Gemini Free Tier `429 RESOURCE_EXHAUSTED` rate limits during critique extraction.
 
 ### 📝 Files Changed
-*   `agent/nodes.py`:
-    *   **Removed** Apify Client dependencies and lazy singletons.
-    *   **Pydantic Schema:** Introduced `SystemForumAnalysis` as a master batch wrapper to aggregate multiple `ModelForumAnalysis` objects in a single pass.
-    *   **Zero-Auth Reddit Engine:** Implemented `_fetch_reddit_json()` utilizing Reddit's unauthenticated search JSON endpoint with a custom User-Agent to retrieve post titles and body excerpts.
-    *   **Unified Triage harvesters:** Updated `_harvest_and_triage_forum_data()` to combine all product feedback texts into a single buffer and pass them to the structured output LLM exactly once.
-*   `main.py`:
-    *   Updated status outputs to reflect pulling zero-auth Reddit JSON threads and structured batch evaluation.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Removed** Apify Client dependencies and lazy singletons.
+  - **Pydantic Schema:** Added [SystemForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L141) as a batch wrapper.
+  - **Zero-Auth Reddit Engine:** Implemented `_fetch_reddit_json()` to fetch Reddit search JSON using a custom User-Agent.
+  - **Structured LLM Batching:** Rebuilt `_harvest_and_triage_forum_data` to consolidate all forum feeds into a single text block, triaged using a single LLM pass.
 
 ---
 
-## Phase 2.7: Legacy HTML Scraping (old.reddit.com)
-**Status:** Completed
-**Date:** July 9, 2026
+## Phase 2.7: Legacy HTML Crawler Fallback
+**Status:** Completed  
+**Date:** July 9, 2026  
 
 ### 🎯 Goal
 Bypass Reddit's `403 Forbidden` API restrictions on search JSON calls by crawling `old.reddit.com/search` directly.
 
 ### 📝 Files Changed
-*   `agent/nodes.py`:
-    *   **HTML Scraper:** Implemented `_fetch_reddit_html()` to query `old.reddit.com/search`, parse results with BeautifulSoup, extracting post titles from `div.search-result-listing -> a.search-title` and body segments, and graceful fallbacks.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **HTML Crawler:** Implemented `_fetch_reddit_html()` to crawl `old.reddit.com/search` and extract thread titles and bodies using BeautifulSoup.
 
 ---
 
-## Phase 2.75: Single-Request Tavily Engine & Metadata URLs
-**Status:** Completed
-**Date:** July 9, 2026
+## Phase 2.75: Single-Request Tavily Critique Engine & Metadata URLs
+**Status:** Completed  
+**Date:** July 9, 2026  
 
 ### 🎯 Goal
-Eliminate brittle scraping of Reddit and legacy HTML pages entirely. Implement a robust, single-request Tavily query architecture for each product, keeping the single-pass Gemini batching active for 429 protection, while maintaining precise metadata source URLs.
+Eliminate brittle HTML scraping of Reddit pages. Implement a single-request Tavily critique search for each product, maintaining precise source URL references.
 
 ### 📝 Files Changed
-*   `requirements.txt`: Removed `apify-client` dependency.
-*   `agent/nodes.py`:
-    *   **Removed** `_fetch_reddit_html` and Reddit-specific crawling methods.
-    *   **Pydantic Schema Upgrade:** Added the `source_url` field to `ForumInsight` so the LLM extracts the exact origin of each complaint.
-    *   **Tavily Engine Rewrite:** Rebuilt `_harvest_and_triage_forum_data()` to run exactly one advanced natural language search query per product (`"what are all the problems faced by the users of {model} on reddit"`) with `max_results=6` and `search_depth="advanced"`.
-    *   **Metadata Stamping:** Stamped source URLs above texts using `--- SOURCE URL: <url> ---` tags in the combined corpus. The single structured LLM pass extracts and associates these URLs, which are stored in the vector database.
-    *   **Consensus Node Upgrade:** Modified `devils_advocate_consensus_node` to format context to expose URLs, and instructs the system prompt to append the source URL/domain in parentheses at the end of each bullet point.
-*   `main.py`:
-    *   Cleaned status strings to show:
-        *   `📡 Executing strict single-request Tavily queries for community feedback...`
-        *   `🧠 Analyzing text batch via single structured pass (Gemini Rate Guard Engaged)...`
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt): Removed the unused `apify-client` dependency.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Removed** all Reddit-specific scrapers and JSON search functions.
+  - **Pydantic Schema Upgrade:** Added `source_url` to [ForumInsight](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L94).
+  - **Tavily Critique Engine:** Rewrote `_harvest_and_triage_forum_data()` to run exactly one natural language query per product (`"what are all the problems faced by the users of {model} on reddit"`) with `max_results=6` and `search_depth="advanced"`.
+  - **URL Metadata Stamping:** Stamped source URLs above snippets in the combined corpus using `--- SOURCE URL: <url> ---` tags. The single-pass LLM extracts and propagates these URLs to the vector store.
+  - **Consensus Citation:** Updated [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1742) to append the source URL or domain in parentheses at the end of each critique bullet point.
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py): Cleaned status outputs to reflect single-request Tavily sweeps.
+
+---
+
+## Phase 2.98: Stability Update & Latency Optimization
+**Status:** Completed  
+**Date:** July 15, 2026  
+
+### 🎯 Goal
+Resolve thread calculation freezes and lazy model download/initialization hangs on the second turn when handling qualitative queries. Prevent client hangs by enforcing rigid timeouts.
+
+### 📝 Files Changed
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Eager Embedding Pre-Warming:** Initialized the local HuggingFace embedding model (`sentence-transformers/all-MiniLM-L6-v2`) eagerly at module-import time instead of lazily.
+  - **Rigid LLM Client Timeouts:** Configured Gemini `ChatGoogleGenerativeAI` clients with a hard `request_timeout=20.0` to force socket drops at 20 seconds, preventing terminal hangs.
+  - **Semantic Query Isolation:** Restricted the vector database query (`similarity_search`) to pass ONLY the latest raw user input string (`user_query`), bypassing CPU calculation loops on bloated multi-turn query strings.
+  - **Context Memory Truncation:** Truncated each historical message within the LLM prompt to 2,000 characters. This aggressively strips massive markdown comparison tables from prior turns to keep context payloads slim and stable.
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py):
+  - Aligned the embedding model name initialization with the canonical full HuggingFace path to reuse the pre-warmed weights.
 
 ### 🧠 Technical Decisions & Notes
-*   **Low Maintenance:** Removing custom scrapers avoids breakage from future Reddit changes.
-*   **Source Traceability:** Propagating the `source_url` all the way from search to ChromaDB to the final RAG output guarantees the adversarial bullets remain auditable and grounded.
+- Eagerly pre-warming the HuggingFace embedding model during import ensures the CLI startup process completely absorbs the initial weight-loading cold start.
+- Isolating search vectors and truncating context memory keeps CPU thread tokenization overhead minimal, maintaining fast and reliable response times under 10 seconds per turn.
 

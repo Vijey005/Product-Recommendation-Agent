@@ -28,6 +28,7 @@ import os
 os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
+import random
 import re
 import threading
 import time
@@ -148,13 +149,34 @@ class SystemForumAnalysis(BaseModel):
     )
 
 
-# ─── Lazy singletons ─────────────────────────────────────────────────────────
-# These are initialised once on first use to avoid slow cold-starts at import.
+# ─── Phase 2.9: Single-Model Spec Extraction Schema ─────────────────────────
+
+class SingleProductSpec(BaseModel):
+    """Structured output for one product's extracted specification table."""
+    product_name: str = Field(
+        description="The exact product model name being extracted."
+    )
+    markdown_table: str = Field(
+        description=(
+            "The complete, extracted two-column Markdown table (Specification | Value) "
+            "containing only factual technical data."
+        )
+    )
+
+
+# ─── Singletons ──────────────────────────────────────────────────────────────
+# Phase 2.98: _embeddings is pre-warmed at module-import time so that the first
+# RAG chat turn never hits a cold-start freeze during active user interaction.
+# All other singletons remain lazily initialised on first use.
 
 _llm_base: ChatGoogleGenerativeAI | None = None
 _llm_creative: ChatGoogleGenerativeAI | None = None
 _extractor_llm = None
-_embeddings: HuggingFaceEmbeddings | None = None
+_embeddings: HuggingFaceEmbeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True},
+)
 _vectorstore: Chroma | None = None
 _tavily: TavilyClient | None = None
 
@@ -172,6 +194,7 @@ def _get_llm_base() -> ChatGoogleGenerativeAI:
             thinking_budget=0,   # Disable dynamic thinking — prevents multi-minute hangs
                                   # on large context comparisons (Gemini 2.5 Flash default
                                   # burns thinking tokens proportional to context size).
+            request_timeout=20.0, # Phase 2.98: hard socket drop at 20 s — prevents terminal hangs
         )
     return _llm_base
 
@@ -196,16 +219,16 @@ def _get_extractor_llm():
 
 
 def _get_embeddings(embeddings: HuggingFaceEmbeddings | None = None) -> HuggingFaceEmbeddings:
-    """Load all-MiniLM-L6-v2 locally (cached after first download ~90 MB)."""
+    """Return the pre-warmed embedding model (loaded at module import).
+
+    Phase 2.98: The global _embeddings singleton is now initialised eagerly at
+    module-import time, eliminating cold-start thread hangs during active chat turns.
+    Passing a custom `embeddings` instance overwrites the singleton (used at
+    startup by main.py's configure_embeddings call).
+    """
     global _embeddings
     if embeddings is not None:
-        _embeddings = embeddings
-    if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        _embeddings = embeddings  # allow startup override
     return _embeddings
 
 
@@ -902,19 +925,22 @@ def _harvest_single_model(
         all_page_texts: List[str] = []
 
         # Layer 3 — Parallel URL fetch+ingest (up to 4 workers per model)
+        # A tiny stagger between submissions prevents the first URL from dropping
+        # connection chunks due to Tavily burst-rate collisions.
         with ThreadPoolExecutor(max_workers=4) as url_executor:
-            url_futures = {
-                url_executor.submit(
-                    _fetch_and_ingest_url,
-                    result.get("url", ""),
-                    result.get("title", model),
-                    model,
-                    category,
-                    tavily,
-                ): result
-                for result in url_to_result.values()
-                if result.get("url")
-            }
+            url_futures = {}
+            for result in url_to_result.values():
+                if result.get("url"):
+                    time.sleep(random.uniform(0.1, 0.5))  # Tavily burst jitter
+                    fut = url_executor.submit(
+                        _fetch_and_ingest_url,
+                        result.get("url", ""),
+                        result.get("title", model),
+                        model,
+                        category,
+                        tavily,
+                    )
+                    url_futures[fut] = result
 
             for future in as_completed(url_futures):
                 try:
@@ -1088,7 +1114,15 @@ def search_and_vault_node(
         f"3. **Use-Case Inference:** For '{use_case_str}', a flagship processor "
         "(SD 8 Gen 3+, Dimensity 9300+), advanced cooling, or 144Hz+ screen qualifies.\n"
         "4. **Recency:** Only currently recommended models. Ignore historical references.\n"
-        "5. Return ONLY a clean, comma-separated list of model names \u2014 no numbering, "
+        "5. **ENFORCE BRAND DIVERSITY (CRITICAL):** Your final list MUST span multiple "
+        "different manufacturers/brands (e.g., Lenovo, ASUS, Acer, HP, MSI, Dell). "
+        "Do NOT fill the list with products from a single brand family. Each slot must "
+        "represent a genuinely different competitor.\n"
+        "6. **NO SKU DUPLICATION (CRITICAL):** Do NOT list multiple sub-models or "
+        "configurations of the same product family. If you see 'HP Victus 15-AX' and "
+        "'HP Victus 15-BX', extract only the single best representative ('HP Victus 15') "
+        "and use the remaining slots for entirely different brands.\n"
+        "7. Return ONLY a clean, comma-separated list of model names \u2014 no numbering, "
         "no bullets, no explanation. If fewer than 5 qualify, return whatever does. "
         "If nothing qualifies, return: NONE"
     ))
@@ -1117,16 +1151,16 @@ def search_and_vault_node(
     if not discovered_models:
         discovered_models = [r.get("title", f"Product {i+1}")[:80] for i, r in enumerate(raw_results[:6])]
 
-    print(f"  \u2705  Discovered {len(discovered_models)} candidates:")
+    print(f"  ✅  Discovered {len(discovered_models)} candidates:")
     for i, m in enumerate(discovered_models, 1):
         print(f"       {i}. {m}")
     print()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 2 \u2014 PER-PRODUCT SPEC HARVESTER (FOUR-LAYER SYSTEM)
+    # STAGE 2 — PER-PRODUCT SPEC HARVESTER (FOUR-LAYER SYSTEM)
     # ══════════════════════════════════════════════════════════════════════════
     print(f"  {'\u2550'*58}")
-    print(f"  \ud83d\uddc4\ufe0f  STAGE 2 \u2014 Specification Harvester")
+    print(f"  🗄️  STAGE 2 — Specification Harvester")
     print(f"  {'\u2550'*58}\n")
 
     category = category_str
@@ -1135,9 +1169,9 @@ def search_and_vault_node(
     # ── Layer 1: Generate category-aware query templates (one LLM call) ───────
     harvest_queries = _generate_harvest_queries(category, use_case_str, current_year)
 
-    print(f"  \ud83d\udccb  Harvest query templates ({len(harvest_queries)}):")
+    print(f"  📋  Harvest query templates ({len(harvest_queries)}):")
     for t in harvest_queries:
-        print(f"       \u2022 {t.replace('{model}', '[model]')}")
+        print(f"       • {t.replace('{model}', '[model]')}")
     print()
 
     # ── Layers 2 & 3 — Parallel harvest (2 models concurrently) ──────────────
@@ -1169,17 +1203,17 @@ def search_and_vault_node(
                 harvest_results[model] = result
                 vaulted_count += result["chunks_written"]
 
-                status = "\u2705" if not result["error"] else "\u26a0\ufe0f "
+                status = "✅" if not result["error"] else "⚠️ "
                 print(
                     f"  {status}  {model:<45} "
                     f"{result['chunks_written']} chunks | "
                     f"{result['urls_found']} URLs"
                 )
                 if result["error"]:
-                    print(f"       \u26a0\ufe0f  Error: {result['error']}")
+                    print(f"       ⚠️  Error: {result['error']}")
 
             except Exception as exc:
-                print(f"  \u26a0\ufe0f   {model}: unexpected error \u2014 {exc}")
+                print(f"  ⚠️   {model}: unexpected error — {exc}")
                 harvest_results[model] = {
                     "model": model, "urls_found": 0,
                     "chunks_written": 0, "all_page_texts": "", "spec_card_chars": 0, "error": str(exc)
@@ -1187,20 +1221,56 @@ def search_and_vault_node(
 
     print()
 
-    # ── Stage 2 Layer 3b: Bulk Spec Synthesis ─────────────────────────────────
-    models_text_dict = {
-        model: res.get("all_page_texts", "")
-        for model, res in harvest_results.items()
-        if res.get("all_page_texts")
-    }
+    # ── Stage 2 Layer 3b: Sequential Spec Synthesis (Phase 2.9) ──────────────
+    # DESIGN RATIONALE: The previous parallel batch call caused Attention Degradation —
+    # the LLM skipped specs for the first model and produced empty/truncated tables.
+    # We now invoke ONE structured LLM call per model sequentially, with a 3-second
+    # inter-call sleep to safely clear Gemini's Free Tier burst rate limits (429).
+    spec_llm = llm.with_structured_output(SingleProductSpec)
 
-    if models_text_dict:
-        print(f"  \ud83e\udde0  Synthesising spec cards for {len(models_text_dict)} model(s) in parallel...\n")
-        batch_specs = _parallel_synthesise_spec_cards(models_text_dict, category, llm)
+    models_to_synthesise = [
+        m for m in discovered_models
+        if harvest_results.get(m, {}).get("all_page_texts")
+    ]
 
-        for model, spec_card_text in batch_specs.items():
-            if spec_card_text:
-                try:
+    if models_to_synthesise:
+        print(f"  🧠  Sequential spec extraction for {len(models_to_synthesise)} model(s) "
+              f"(3 s rate-limit gap between calls)...\n")
+
+        for model in models_to_synthesise:
+            raw_text = harvest_results[model]["all_page_texts"]
+            corpus_snippet = raw_text[:12000]
+
+            print(f"       ⏳  Extracting spec card: {model}")
+            try:
+                spec_result: SingleProductSpec = spec_llm.invoke([
+                    SystemMessage(content=(
+                        "You are a product specification extractor. "
+                        "Extract ONLY factual, objective specifications from the provided text. "
+                        "Return a clean Markdown table with two columns: Specification | Value. "
+                        "Include every measurable spec you can find. "
+                        "Do not include opinions, marketing language, or prices in this table. "
+                        "If a value is not present in the text, omit that row entirely — "
+                        "do not write 'Not available'. "
+                        "Populate product_name with the exact model name provided in the prompt. "
+                        "FIELD STANDARDIZATION RULE: To prevent comparison matrix lookups from "
+                        "returning 'Not available in data', you must enforce strict standardization "
+                        "of column keys. For any graphics components, processing units, or video "
+                        "cards, always use the explicit column key string 'Graphics Processor (GPU)'. "
+                        "Never leave this field blank if the raw text segments contain any details "
+                        "on GPU configurations, GPU models, or graphics options."
+                    )),
+                    HumanMessage(content=(
+                        f"Product: {model}\n\n"
+                        f"Extract all technical specifications from the following scraped text "
+                        f"and return them as a Markdown table (Specification | Value):\n\n"
+                        f"{corpus_snippet}"
+                    )),
+                ])
+
+                spec_card_text = spec_result.markdown_table.strip() if spec_result.markdown_table else ""
+
+                if spec_card_text:
                     spec_card_id   = f"speccard_{_url_to_product_id(model)}"
                     spec_card_meta = {
                         "product_id":   _url_to_product_id(model),
@@ -1211,17 +1281,23 @@ def search_and_vault_node(
                         "chunk_type":   "spec_card",
                     }
                     with _vault_write_lock:
-                        vs = _get_vectorstore()
-                        vs.add_texts(
+                        vs_inner = _get_vectorstore()
+                        vs_inner.add_texts(
                             texts=[spec_card_text],
                             metadatas=[spec_card_meta],
                             ids=[spec_card_id],
                         )
-                    if model in harvest_results:
-                        harvest_results[model]["spec_card_chars"] = len(spec_card_text)
+                    harvest_results[model]["spec_card_chars"] = len(spec_card_text)
                     print(f"       ✅  Spec card vaulted for {model} ({len(spec_card_text)} chars)")
-                except Exception as exc:
-                    print(f"       ⚠️  Failed to vault spec card for {model}: {exc}")
+                else:
+                    print(f"       ⚠️  Empty spec card returned for {model} — skipping vault.")
+
+            except Exception as exc:
+                print(f"       ⚠️  Spec extraction failed for {model}: {exc}")
+
+            # ── CRITICAL: 3-second sleep to bypass Gemini 429 burst rate limits ──
+            time.sleep(3)
+
         print()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1420,13 +1496,14 @@ def comparison_agent_node(
                 pass
 
         # Step 2 — One targeted similarity search for the user's specific question
+        # Phase 2.98: Pass ONLY the raw user query string to the embedding engine.
+        # Passing `expanded_query` (which appends all model names) or any part of
+        # the chat history causes the CPU embedding model to tokenise a large string
+        # on the second turn, producing a thread-calculation hang on cold hardware.
         try:
-            similarity_docs = vs.similarity_search(expanded_query, k=RAG_TOP_K)
+            similarity_docs = vs.similarity_search(user_query, k=RAG_TOP_K)
         except Exception:
-            try:
-                similarity_docs = vs.similarity_search(user_query, k=RAG_TOP_K)
-            except Exception:
-                similarity_docs = []
+            similarity_docs = []
 
         # Step 3 — Combine: spec cards first, then de-duplicated similarity hits
         seen_contents = {doc.page_content for doc in spec_card_docs}
@@ -1438,10 +1515,12 @@ def comparison_agent_node(
 
     else:
         # Non-comparison query: single similarity search
+        # Phase 2.98: use only the raw user query — not the expanded form — to
+        # keep the embedding payload minimal and avoid CPU thread hangs.
         try:
-            docs = vs.similarity_search(expanded_query, k=RAG_TOP_K)
-        except Exception:
             docs = vs.similarity_search(user_query, k=RAG_TOP_K)
+        except Exception:
+            docs = []
 
     if not docs:
         no_data_msg = (
@@ -1509,11 +1588,28 @@ def comparison_agent_node(
         f"[USER QUESTION]\n{user_query}"
     ))
 
-    # Extract the last 3 or 4 messages from chat_history (excluding the very last one if it's the current prompt)
+    # Phase 2.98: Inject only the last 4 messages from chat history into the
+    # LLM synthesis prompt, and hard-truncate each message body to 2 000 chars.
+    # This prevents prior-turn markdown comparison tables (which can be 10 KB+)
+    # from ballooning the context payload sent to Gemini and triggering a socket
+    # hang or a thinking-token explosion on the second RAG turn.
     recent_history = []
     if history:
         history_to_consider = history[:-1] if len(history) > 0 else history
-        recent_history = history_to_consider[-4:]
+        raw_slice = history_to_consider[-4:]
+        for msg in raw_slice:
+            raw_content = msg.content
+            # Flatten list-format content (Gemini multi-part) to plain text
+            if isinstance(raw_content, list):
+                raw_content = " ".join(
+                    p if isinstance(p, str) else p.get("text", "") for p in raw_content
+                )
+            truncated = str(raw_content)[:2000]
+            # Reconstruct as the same message type with truncated body
+            if isinstance(msg, HumanMessage):
+                recent_history.append(HumanMessage(content=truncated))
+            else:
+                recent_history.append(AIMessage(content=truncated))
 
     messages = [system_prompt] + recent_history + [context_message]
 
@@ -1610,32 +1706,43 @@ def _harvest_and_triage_forum_data(
     for product in products_to_fetch:
         print(f"\n       📡  [{product}] Executing Tavily community feedback query...")
         query = f"what are all the problems faced by the users of {product} on reddit"
-        try:
-            resp = tavily.search(
-                query=query,
-                max_results=6,
-                search_depth="advanced",
-            )
-            results = resp.get("results", [])
-            if not results:
-                print(f"       ⚠️  No Tavily results returned for '{product}'.")
-                continue
 
-            # Open the product section in the corpus
-            combined_corpus += f"\n\n{'=' * 60}\n[PRODUCT: {product}]\n{'=' * 60}\n"
+        # Retry loop — absorbs transient ConnectionResetError (10054) socket drops
+        # so a single dropped connection never leaves a product with zero forum data.
+        max_retries = 3
+        resp = None
+        for attempt in range(max_retries):
+            try:
+                resp = tavily.search(
+                    query=query,
+                    max_results=6,
+                    search_depth="advanced",
+                )
+                break  # Success — exit retry loop
+            except Exception as exc:
+                if attempt == max_retries - 1:
+                    print(f"       ⚠️  Tavily final failure for '{product}' after {max_retries} attempts: {exc}")
+                    resp = {"results": []}
+                else:
+                    print(f"       🔄  Tavily attempt {attempt + 1} failed for '{product}' ({exc}) — retrying in 1.5 s...")
+                    time.sleep(1.5)
 
-            for result in results:
-                url     = result.get("url", "unknown")
-                content = result.get("content", "") or result.get("snippet", "")
-                if content:
-                    combined_corpus += (
-                        f"\n\n--- SOURCE URL: {url} ---\n"
-                        f"{content}"
-                    )
-
-        except Exception as exc:
-            print(f"       ⚠️  Tavily query failed for '{product}': {exc}")
+        results = resp.get("results", []) if resp else []
+        if not results:
+            print(f"       ⚠️  No Tavily results returned for '{product}'.")
             continue
+
+        # Open the product section in the corpus
+        combined_corpus += f"\n\n{'=' * 60}\n[PRODUCT: {product}]\n{'=' * 60}\n"
+
+        for result in results:
+            url     = result.get("url", "unknown")
+            content = result.get("content", "") or result.get("snippet", "")
+            if content:
+                combined_corpus += (
+                    f"\n\n--- SOURCE URL: {url} ---\n"
+                    f"{content}"
+                )
 
     if not combined_corpus.strip():
         print("       ⚠️  No raw forum data collected across all products — aborting triage.")
@@ -1666,6 +1773,18 @@ def _harvest_and_triage_forum_data(
         "LEGITIMATE CRITIQUES: Isolate explicit hardware defects, software bugs, display tint "
         "issues, tracking dropouts, thermal throttling, battery drain, build quality failures, "
         "or any verifiable component failure.\n\n"
+        "STRICT CROSS-MODEL ATTRIBUTION GUARD: If a forum critique discusses a product family "
+        "generally without specifying the explicit technical part number (e.g., 'HP Victus 15'), "
+        "do NOT copy the exact same complaint text block across multiple models. Assign the "
+        "generic flaw ONLY to the primary model that is the best match, or group them under a "
+        "unified attribute for that primary model. Do not duplicate identical raw_quote strings "
+        "across different models.\n\n"
+        "STRUCTURAL AMBIGUITY ELIMINATION FILTER: Maintain a zero-tolerance boundary for vague "
+        "expressions. If a text block contains phrases like 'big problem' or 'awful system' "
+        "without explicitly identifying the mechanical feature, software module, or component "
+        "defect that is broken, you MUST classify it as 'Unsubstantiated Hate' and drop it "
+        "entirely. Only retain critiques where the specific failing component or behaviour is "
+        "named.\n\n"
         f"Products in this batch: {products_list_str}\n"
         "Return a SystemForumAnalysis with one ModelForumAnalysis entry per product that has "
         "extractable data. If a product has no meaningful discussion, include it with an "
@@ -1862,35 +1981,36 @@ def devils_advocate_consensus_node(
     )
 
     system_prompt = SystemMessage(content=(
-        "You are the Devil's Advocate. Your sole purpose is to present a brutally honest, "
-        "objective, and highly defensive case against purchasing these products by exposing "
-        "verified real-world community bugs and flaws. "
-        "You answer STRICTLY from the retrieved community critique data. "
-        "No spec-sheet promotion. No marketing language. No unsupported praise.\n\n"
+        "You are a conversational, highly persuasive AI agent playing the Devil's Advocate. "
+        "Your goal is to talk the user OUT of making a purchase by exposing verified real-world "
+        "community bugs and flaws.\n\n"
+        "DO NOT just output a dry, bulleted list of complaints. Converse with the user naturally. "
+        "Weave the verified complaints into a flowing, narrative argument. Frame your sentences "
+        "as if you are a concerned tech expert giving a friend an honest warning.\n\n"
+        "CRITICAL NUMERICAL CITATION RULE: You must NEVER print the literal character "
+        "letter 'N' inside the verification bracket. You must physically look at the "
+        "matching context items provided below, count the exact number of independent "
+        "threads or unique comment snippets backing that specific hardware defect, and "
+        "output that real integer value. "
+        "Example of correct format: '...and honestly, the thermal throttling is a "
+        "dealbreaker. 🔴 [Sourced from 3 independent community reports - Severity Weight: 5/5] "
+        "(reddit.com/r/Laptops). It essentially turns into a space heater...'. "
+        "If an issue appears only once in the context data, output '1 independent community "
+        "report'. The integer MUST reflect the actual count from the context — never a "
+        "placeholder.\n\n"
+        "SEVERITY FIRST: Lead your narrative with the highest-severity defects (Severity 4–5) "
+        "and naturally flow down to lesser issues as the conversation continues.\n\n"
+        "STRICT GROUNDING: Answer strictly using the provided context. Only discuss defects "
+        "that appear in the retrieved context. Do NOT hallucinate or extrapolate beyond the data.\n\n"
+        "NO HEDGING: Do not soften verified defects with marketing language or brand apologies. "
+        "You are a concerned friend, not a PR spokesperson.\n\n"
+        "PRODUCT SCOPE: Only discuss the products listed below. Do NOT introduce other models.\n\n"
+        "ZERO DATA POLICY: If no complaints exist for a specific inquiry, converse naturally "
+        "to state that the community hasn't reported issues regarding that yet — do not "
+        "hallucinate data points.\n\n"
         f"Products under review: {models_str}\n"
         f"Total verified community signals in vault: {total_discussions}\n"
-        f"Coverage per product: {coverage_summary}\n\n"
-        "ADVERSARIAL RULES — follow without exception:\n"
-        "1. VERIFICATION BADGING (MANDATORY): For every structural issue or defect you highlight, "
-        "   you MUST prepend the argument with the number of community discussions or severity "
-        "   markers supporting that point. Use EXACTLY this format: "
-        "   '🔴 [Sourced from N independent community reports - Severity Weight: X/5]: "
-        "   Users consistently flag...'\n"
-        "2. SEVERITY FIRST: Lead with the highest-severity defects (Severity 4–5), then work down.\n"
-        "3. STRICT GROUNDING: Only cite defects that appear in the retrieved context data. "
-        "   Do NOT hallucinate data points or extrapolate beyond what is documented here.\n"
-        "4. NO HEDGING: Do not soften verified defects with marketing language or brand apologies.\n"
-        "5. PRODUCT SCOPE: Only discuss the products listed above. "
-        "   Do NOT introduce other models from the context.\n"
-        "6. NOISE POLICY: Ignore any chunk classified as 'Sarcastic/Meme Noise' or "
-        "   'Unsubstantiated Hate' — these have been pre-filtered from the vault.\n"
-        "7. ZERO DATA POLICY: If a product model has no verified critiques inside the contextual "
-        "   workspace, write exactly: 'No verified forum complaints found for this device.' "
-        "   Do not hallucinate data points.\n"
-        "8. SOURCE CITATION (MANDATORY): At the end of each bullet point or finding, append the "
-        "   source URL or domain in parentheses. Example: "
-        "   '...(Source: reddit.com/r/GooglePixel)'. Use the 'Source:' field from the "
-        "   context entries. If the source is 'unknown', omit the citation."
+        f"Coverage per product: {coverage_summary}"
     ))
 
     context_message = HumanMessage(content=(
