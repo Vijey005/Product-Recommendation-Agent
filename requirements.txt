@@ -1,8 +1,20 @@
 # ─────────────────────────────────────────────────
-# Product Recommendation Agent — Phase 2
+# Product Recommendation Agent — Phase 3
 # All packages are 100% free & open-source.
 # Install: pip install -r requirements.txt
 # ─────────────────────────────────────────────────
+
+# ── Phase 3.0: Production API ────────────────────
+# FastAPI — high-performance async web framework
+fastapi>=0.111.0
+# Uvicorn — ASGI server with WebSocket & HTTP/2 support
+uvicorn[standard]>=0.29.0
+# SSE-Starlette — Server-Sent Events for streaming responses
+sse-starlette>=1.8.0
+# SlowAPI — IP-based rate limiting middleware (PRD §4)
+slowapi>=0.1.9
+# HTTPX — async HTTP client (used internally by FastAPI TestClient)
+httpx>=0.27.0
 
 # Core LangChain ecosystem
 langchain>=0.2.0

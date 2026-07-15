@@ -11,6 +11,9 @@ This document tracks all design decisions, file modifications, and progress mile
 - [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py)
 - [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py)
 - [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py)
+- [api/server.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/server.py)
+- [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py)
+- [api/dependencies.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/dependencies.py)
 - [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt)
 - [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example)
 
@@ -217,3 +220,54 @@ Resolve thread calculation freezes and lazy model download/initialization hangs 
 - Eagerly pre-warming the HuggingFace embedding model during import ensures the CLI startup process completely absorbs the initial weight-loading cold start.
 - Isolating search vectors and truncating context memory keeps CPU thread tokenization overhead minimal, maintaining fast and reliable response times under 10 seconds per turn.
 
+---
+
+## Phase 3.0: Production-Grade FastAPI Backend & SSE Streaming
+**Status:** Completed
+**Date:** July 15, 2026
+
+### 🎯 Goal
+Deprecate the local CLI execution loop as the primary interface and upgrade the LangGraph recommendation engine into a production-ready FastAPI backend. The API streams LLM responses token-by-token via Server-Sent Events (SSE) so users see output immediately rather than waiting 15+ seconds for a complete JSON response.
+
+### 📝 Files Created & Changed
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt): Added Phase 3.0 server dependencies — `fastapi>=0.111.0`, `uvicorn[standard]>=0.29.0`, `sse-starlette>=1.8.0`, `slowapi>=0.1.9`, `httpx>=0.27.0`.
+- [api/__init__.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/__init__.py): Created `api/` as a Python package.
+- [api/dependencies.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/dependencies.py): Created. Initialises all shared singletons at module import time:
+  - Pre-warms `HuggingFaceEmbeddings("sentence-transformers/all-MiniLM-L6-v2")` and registers it with `nodes.py` via `configure_embeddings()` — mirrors the Phase 2.98 startup warm-up in `main.py`.
+  - Compiles the interview `StateGraph` with a `MemorySaver` checkpointer (`app_with_memory`) so multi-turn interview conversations persist across stateless HTTP requests.
+  - Declares `SessionStore` (`Dict[str, Dict]`) as the in-memory `session_id → AgentState` bridge.
+  - Exposes `get_agent_app()` and `get_embeddings()` as FastAPI `Depends` factories.
+- [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py): Created. Contains all endpoints, schemas, and SSE streaming generators:
+  - `GET /health` — liveness probe.
+  - `GET /api/v1/session/{session_id}` — returns `SessionStateResponse` snapshot.
+  - `POST /api/v1/chat` (20 req/min) — primary SSE endpoint. Routes automatically between interview phase (`astream_events()`) and RAG phase (`llm.astream()` + `asyncio.to_thread()` for ChromaDB retrieval).
+  - `POST /api/v1/advocate` (20 req/min) — Devil's Advocate SSE endpoint. Runs `_harvest_and_triage_forum_data` in `asyncio.to_thread()` then streams the adversarial LLM critique.
+- [api/server.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/server.py): Created. FastAPI application factory:
+  - `lifespan` context manager triggers `api.dependencies` import at startup (embedding warm-up + graph compilation) and logs a readiness banner.
+  - `CORSMiddleware` with `allow_origins=["*"]` for local frontend development.
+  - `SlowAPIMiddleware` enforces the 20 req/min per-IP cap to protect Gemini and Tavily free-tier quotas.
+  - Global `Exception` handler returns clean `{"detail": "..."}` JSON instead of 500 stack traces.
+
+### 🧠 Technical Decisions & Notes
+- **Blocking I/O isolation:** `search_and_vault_node` and `_harvest_and_triage_forum_data` contain `time.sleep(3)` Gemini rate-gap guards and synchronous Tavily/ChromaDB I/O. These run in `asyncio.to_thread()` so the FastAPI event loop is never blocked.
+- **Graph recompilation with checkpointer:** `graph.py`'s `app` is compiled without a checkpointer (CLI use). `api/dependencies.py` rebuilds the identical `StateGraph` and compiles it with `MemorySaver` so the API can maintain per-session LangGraph thread state across HTTP calls.
+- **Session bridging:** HTTP is stateless but the agent is multi-turn. The in-memory `SessionStore` dict maps `session_id → AgentState` to preserve constraints, mode flags, and chat history between requests.
+- **SSE frame protocol:** Four frame types — `token` (append to display), `status` (show progress toast), `done` (finalise + include metadata), `error` (show error toast). Uses RFC 8895 `event:/data:` wire format.
+
+---
+
+## Phase 3.01: Pydantic Forward Reference Bug Fix
+**Status:** Completed
+**Date:** July 15, 2026
+
+### 🎯 Goal
+Fix a `PydanticUserError: TypeAdapter[...ForwardRef('ChatRequest')...] is not fully defined` crash that prevented the Swagger UI (`/docs`) from rendering after the server started.
+
+### 📝 Files Changed
+- [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py):
+  - **Removed** `from __future__ import annotations` (PEP 563). This directive converts all annotations to lazy string `ForwardRef` objects at parse time. Pydantic v2's `TypeAdapter` cannot resolve `ForwardRef('ChatRequest')` at route registration time, causing the crash.
+  - **Hoisted** `ChatRequest`, `AdvocateRequest`, and `SessionStateResponse` class definitions to appear **before** `router = APIRouter()`. FastAPI inspects handler parameter types the moment `@router.post(...)` is evaluated; the Pydantic models must be fully constructed live classes at that point — not strings pending later resolution.
+
+### 🧠 Technical Decisions & Notes
+- No async logic, SSE generators, or `asyncio.to_thread` wrappers were changed — this was a purely structural file-reordering fix.
+- The fix is confirmed by a post-patch import validation: `ChatRequest`, `AdvocateRequest`, `SessionStateResponse`, and all 4 router routes (`/health`, `/api/v1/session/{id}`, `/api/v1/chat`, `/api/v1/advocate`) load without errors.

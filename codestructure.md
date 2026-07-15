@@ -8,96 +8,134 @@ This document explains the architecture, file organization, and core modules of 
 
 Here is the complete layout of the workspace. Click any file link to open it:
 
-- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py) — The CLI entry point and execution loop orchestrator.
-- [agent/](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent) — Core agent package folder.
-  - [agent/__init__.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/__init__.py) — Packages initializer.
-  - [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py) — State definitions and schemas sharing data across components.
-  - [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py) — Pydantic structures for user constraint parsing.
-  - [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py) — LangGraph state machine topology and wiring.
-  - [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py) — Graph execution nodes, scraping utilities, RAG agent, and forum triagers.
-- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt) — Project dependencies (LangChain, LangGraph, Tavily, ChromaDB, Sentence Transformers).
-- [.env](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env) — Active environment configurations (contains API keys).
-- [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example) — Template configuration file.
-- [README.md](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/README.md) — Standard user manual and setup guidelines.
+- [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py) — Legacy CLI entry point and execution loop orchestrator (retained for local testing).
+- [agent/](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent) — Core agent package.
+  - [agent/__init__.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/__init__.py) — Package initializer.
+  - [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py) — `AgentState` TypedDict: single source of truth shared across all nodes and API sessions.
+  - [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py) — `ProductConstraints` Pydantic model for structured user requirement parsing.
+  - [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py) — LangGraph `StateGraph` topology and conditional routing.
+  - [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py) — All graph nodes, spec harvesting engine, RAG answering nodes, and forum triager.
+- [api/](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api) — **Phase 3.0** production FastAPI backend package.
+  - [api/__init__.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/__init__.py) — Package marker.
+  - [api/server.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/server.py) — FastAPI app factory: CORS, slowapi rate-limiting middleware, lifespan startup hook, global exception handler.
+  - [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py) — All HTTP endpoints, Pydantic I/O schemas, SSE frame helpers, and async streaming generators.
+  - [api/dependencies.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/dependencies.py) — Module-level singletons: embedding warm-up, MemorySaver graph, SessionStore, and FastAPI `Depends` factories.
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt) — All dependencies: LangChain, LangGraph, Tavily, ChromaDB, Sentence Transformers, FastAPI, uvicorn, sse-starlette, slowapi.
+- [.env](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env) — Active environment configuration (API keys — gitignored).
+- [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example) — Template for required environment variables.
+- [README.md](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/README.md) — Setup guide and usage instructions.
 - [Product Recommendation Agent PRD.pdf](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/Product%20Recommendation%20Agent%20PRD.pdf) — Original product requirements document.
-- [Production-Ready Product Recommendation PRD.pdf](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/Production-Ready%20Product%20Recommendation%20PRD.pdf) — Detailed specifications for advanced implementation.
+- [Production-Ready Product Recommendation PRD.pdf](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/Production-Ready%20Product%20Recommendation%20PRD.pdf) — Detailed specifications for the production implementation.
 
 ---
 
 ## Architecture Overview
 
-The system is designed as a **two-phase interactive assistant**:
+The system now operates in two modes sharing the same underlying LangGraph agent and node logic:
 
-1. **Phase A (Interview Loop):** Built as a cyclic state machine in **LangGraph**. The system asks targeted questions to understand product criteria. An analyzer node reads the history to extract criteria into a structured Pydantic schema. Once at least 5 attributes are filled, Phase A terminates by launching a concurrent product discovery and crawling engine (the Spec Harvester).
-2. **Phase B (RAG Chat Loop):** Directly managed by [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py) to save LLM tokens and ensure high responsiveness. The user enters a standard chat mode. Queries are dispatched to retrieval nodes querying a local vector store ([ChromaDB](https://github.com/chroma-core/chroma)) indexed with the crawls. 
-   - *Standard RAG Mode:* Compares specifications from pre-computed spec tables.
-   - *Devil's Advocate Mode (triggered via `/advocate`):* Swaps context entirely to community complaints sourced from Reddit/public forums to highlight defects and bugs.
+### Mode 1 — Legacy CLI (`main.py`)
+Direct Python execution. Runs the LangGraph interview loop then drops into a blocking RAG chat loop. Used for local testing.
+
+### Mode 2 — Production API Server (`api/`)
+FastAPI server exposing the agent over HTTP with **real-time token streaming via Server-Sent Events (SSE)**. Run with:
+```
+uvicorn api.server:app --reload --port 8000
+```
+
+### Agent Phases (shared by both modes)
+
+1. **Phase A — Interview Loop:** A cyclic LangGraph state machine. The `analyzer_node` extracts structured criteria via LLM into `ProductConstraints`. Once ≥5 fields are populated (`is_profile_complete = True`), the graph transitions to `search_and_vault_node` which runs the four-layer spec harvesting engine.
+
+2. **Phase B — RAG Chat:** User enters open-ended chat. Queries route to `comparison_agent_node` (spec comparisons, grounded in ChromaDB vault) or `devils_advocate_consensus_node` (adversarial forum critique).
+
+3. **Phase 3.0 — API Streaming Layer:** The `api/` package wraps Phase A and B in async SSE generators. Every token the LLM produces is forwarded to the client immediately. Blocking I/O (ChromaDB, Tavily, `time.sleep` rate gaps) runs in `asyncio.to_thread()` to keep the FastAPI event loop unblocked.
 
 ---
 
 ## File Responsibilities & Key Symbols
 
 ### 1. [main.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/main.py)
-- **Role:** Handles the command-line interface, handles inputs, prints colored terminal banners, and manages the execution loop transition.
+- **Role:** Legacy CLI — environment checks, UTF-8 console guard (Windows), dual execution loop.
 - **Key Flow:**
-  - Performs environment checks on start, ensuring `GEMINI_API_KEY` and `TAVILY_API_KEY` are present.
-  - Reconfigures stdout to UTF-8 on Windows command lines for proper emoji rendering.
-  - Runs a dual-loop:
-    - **Loop 1:** Invokes the compiled LangGraph application `app.invoke(state)` on every user turn until the graph signals `is_rag_mode = True`.
-    - **Loop 2:** Breaks out of LangGraph, prints a list of discovered products, and routes inputs straight to [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1343) or [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1742).
-    - Captures `/advocate` to engage advocate mode and `/exit` to return to spec comparison mode.
+  - **Loop 1:** `app.invoke(state)` on every user turn until `is_rag_mode = True`.
+  - **Loop 2:** Routes inputs to `comparison_agent_node` or `devils_advocate_consensus_node`. Intercepts `/advocate` and `/exit` commands.
 
 ### 2. [agent/state.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py)
-- **Role:** Declares the single source of truth dict that flows through the system.
+- **Role:** Declares the single `AgentState` TypedDict that flows through every node and every HTTP session.
 - **Key Symbols:**
-  - [AgentState](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py#L17) (`TypedDict`): Holds execution variables:
-    - `session_id`: Unique session string.
-    - `chat_history`: Running message log using the LangGraph `add_messages` reducer to safely append turns.
-    - `constraints`: Dictionary of criteria extracted by the LLM.
-    - `is_profile_complete`: Boolean flag triggering transition to the harvester.
-    - `retrieved_products`: Curated list of specific models found on the web (populated by the discovery pipeline).
-    - `is_rag_mode`: State flag routing queries straight to Phase B.
-    - `is_advocate_mode`: State flag indicating if RAG queries target public complaints instead of technical specs.
+  - [AgentState](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/state.py#L17): `session_id`, `chat_history` (LangGraph `add_messages` reducer), `constraints`, `is_profile_complete`, `retrieved_products`, `is_rag_mode`, `is_advocate_mode`.
 
 ### 3. [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py)
-- **Role:** Pydantic validation structure for user requirements.
+- **Role:** Pydantic validation for user requirements.
 - **Key Symbols:**
-  - [ProductConstraints](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py#L16) (`BaseModel`): 11 critical properties describing the buyer's desired device:
-    - `product_category`, `budget_min`, `budget_max`, `primary_use_case`, `hard_requirements`, `preferred_brands`, `avoided_brands`, `form_factor`, `operating_system`, `performance_tier`, and `additional_notes`.
-    - Provides helper methods `filled_fields()` and `missing_fields()` to monitor profiling completion progress.
+  - [ProductConstraints](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py#L16): 11 fields — `product_category`, `budget_min`, `budget_max`, `primary_use_case`, `hard_requirements`, `preferred_brands`, `avoided_brands`, `form_factor`, `operating_system`, `performance_tier`, `additional_notes`. Helpers: `filled_fields()`, `missing_fields()`.
 
 ### 4. [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py)
-- **Role:** Constructs and compiles the LangGraph StateGraph topology.
+- **Role:** Constructs and compiles the LangGraph `StateGraph`.
 - **Key Symbols:**
-  - [build_graph()](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py#L57): Hooks up the graph structure:
-    - Sets [analyzer_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L333) as entry point.
-    - Adds conditional edge using `_route_after_analysis()` routing to [question_generator_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L380) (if profile is incomplete) or [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L951) (if complete).
-    - Exposes the runnable compiled instance as `app`.
+  - [build_graph()](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py#L57): Wires `analyzer_node` → conditional edge (`_route_after_analysis`) → `question_generator_node` (incomplete) or `search_and_vault_node` (complete). Returns `app` compiled **without** a checkpointer (CLI use only).
+  - The API server reconstructs an identical graph in `api/dependencies.py` compiled with `MemorySaver` for cross-request session persistence.
 
 ### 5. [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py)
-- **Role:** Exposes graph nodes, search drivers, LLM triagers, and vector DB vault interfaces.
+- **Role:** All graph node functions, LLM clients, ChromaDB vault interface, web scrapers, and forum triager.
 - **Pydantic Schemas for Forum Triaging:**
-  - [ForumInsight](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L94): Stores structured complaint data containing `raw_quote`, `classification` (Constructive Criticism, Legitimate Praise, Unsubstantiated Hate, Meme Noise), `underlying_issue`, `severity_weight` (1 to 5), and `source_url`.
-  - [ModelForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L131): Collection of verified insights per device model.
-  - [SystemForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L141): Master batch payload wrapper.
+  - [ForumInsight](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L94): `raw_quote`, `classification`, `underlying_issue`, `severity_weight` (1–5), `source_url`.
+  - [ModelForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L131): Collection of `ForumInsight` per device.
+  - [SystemForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L141): Master batch wrapper for the single-pass LLM triage call.
 - **Key Nodes & Engines:**
-  - [analyzer_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L333): Uses structured LLM extraction to populate [ProductConstraints](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py#L16). Prevents soft-inference assumptions (e.g. assuming "good camera" for creators) to enforce precise profiling.
-  - [question_generator_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L380): Identifies missing criteria and drafts the single next best question. Formats currency outputs in INR (`₹`) and supplies 3-4 numbered options for user simplicity.
-  - [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L951): Runs the four-layer specification harvesting engine:
-    - **Stage 1 (Discovery):** Generates a time-aware discovery search query using the live month/year. Curates exactly 5-6 model names from snippet results via a dedicated curator LLM call.
-    - **Stage 2 (Spec Harvester):**
-      - *Layer 1:* LLM generates query templates targeting specific spec clusters (performance, screens, reviews, battery).
-      - *Layer 2 (Multi-Query Execution):* Deduplicates URLs and runs Tavily search templates concurrently per model using a ThreadPoolExecutor.
-      - *Layer 3 (Adaptive Ingestion & Spec Synthesis):* Fetches content using Tavily extraction or BeautifulSoup fallbacks. Dynamically checks content type: parses spec-dense tables with smaller chunking bounds (`chunk_size=400`) and narrative critiques with larger bounds (`chunk_size=1000`). Synthesizes complete specification sheets in parallel using `_parallel_synthesise_spec_cards` executing concurrent LLM calls per model. Chunks and specification cards are vaulted into ChromaDB. Writes are explicitly thread-guarded using `_vault_write_lock`.
-      - *Layer 4 (Coverage Verification):* Assesses total chunks vaulted. Triggers supplementary crawls for any device with fewer than 20 chunks.
-  - [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1412): A grounded RAG answer node. Implements a hybrid spec-card-first retrieval mechanism: retrieves the pre-computed spec sheets using metadata filters (bypassing expensive embedding model CPU steps) and appends a single semantic search to resolve qualitative queries.
-    - **Phase 2.98 Stability Fixes:**
-      - *Semantic Query Isolation:* The similarity search is isolated to query the vector store using ONLY the raw, latest user query (`user_query`) instead of an expanded query containing all candidate names, keeping CPU embedding calculations minimal and preventing thread calculation hangs on the second turn.
-      - *Eager Pre-warming:* Instantiates `HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")` eagerly at module initialization time rather than lazily. This completely absorbs the model loading cold start during the `Initialising AI models...` CLI startup phase.
-      - *LLM Request Timeouts:* Configures the Gemini client with a rigid `request_timeout=20.0` option to force a socket drop at 20 seconds, preventing terminal hangs on rate-limited or blocked API endpoints.
-      - *Prior-Turn Context Truncation:* Filters chat history to the last 4 turns and truncates each message text to a maximum of 2,000 characters. This aggressively strips large markdown comparison tables generated during previous turns to prevent context bloat and Gemini thinking-token hangs on subsequent turns.
-  - [_harvest_and_triage_forum_data](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1609): Triggered by `/advocate`. Issues exactly **one** natural-language Tavily search per product targeted at Reddit user reports, stamping URL boundaries `--- SOURCE URL: <url> ---` into a master corpus buffer. Evaluates the full text buffer in **one single structured LLM pass** using [SystemForumAnalysis](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L142) to defend against Gemini Free Tier 429 rate limit issues. Stores triaged insights with source URLs into ChromaDB under `chunk_type="forum_critique"`.
-  - [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1810): Queries `forum_critique` vectors. Formats descriptions sorted by severity with discussion counts (`🔴 [Sourced from N independent community reports - Severity Weight: X/5]: ...`) and appends domain-level origin URLs in parentheses.
+  - [analyzer_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L356): Structured LLM extraction into `ProductConstraints`. Strict anti-inference prompting prevents soft assumptions.
+  - [question_generator_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L403): Identifies missing fields, drafts one targeted question with 3–4 numbered options. Budget in INR (`₹`).
+  - [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L977): Four-layer spec harvesting:
+    - *Stage 1 (Discovery):* Time-stamped query (`datetime.now().strftime('%B %Y')`), curator LLM extracts 5–6 canonical model names.
+    - *Stage 2 — Layer 1:* LLM generates 4–5 query templates per spec cluster.
+    - *Stage 2 — Layer 2:* ThreadPoolExecutor runs Tavily queries concurrently; URLs deduplicated.
+    - *Stage 2 — Layer 3 (Adaptive Ingestion):* Tavily extract + BeautifulSoup fallback. `chunk_size=400` for spec-dense tables, `chunk_size=1000` for narrative. Spec cards synthesised **sequentially** with `time.sleep(3)` between each model call to clear Gemini Free Tier 429 burst limits. All writes thread-guarded by `_vault_write_lock`.
+    - *Stage 2 — Layer 4:* Coverage check — re-crawls any model with <20 vaulted chunks.
+  - [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1419): Hybrid spec-card-first RAG. Metadata filter pulls spec cards (no embedding computation); semantic `similarity_search` on the latest raw `user_query` only (Phase 2.98 isolation fix). History truncated to last 4 turns × 2,000 chars. LLM `request_timeout=20.0`.
+  - [_harvest_and_triage_forum_data](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1636): One Tavily search per product (`search_depth="advanced"`, `max_results=6`), URL-stamped corpus, single structured LLM triage pass → ChromaDB `chunk_type="forum_critique"`. In the API this runs inside `asyncio.to_thread()`.
+  - [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1861): Queries `forum_critique` chunks, sorts by `severity_weight`, formats `🔴 [Sourced from N independent community reports - Severity Weight: X/5]` with source domain URLs.
+
+---
+
+### 6. [api/dependencies.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/dependencies.py)
+- **Role:** Module-level singleton initialisation; FastAPI `Depends` factories.
+- **Key Symbols:**
+  - `_embeddings`: `HuggingFaceEmbeddings("sentence-transformers/all-MiniLM-L6-v2")` pre-warmed at import time. Registered with `nodes.py` via `configure_embeddings()` — zero duplicate model loads.
+  - `_checkpointer` (`MemorySaver`): LangGraph in-process checkpoint store for cross-request interview persistence.
+  - `app_with_memory`: `StateGraph` compiled with `_checkpointer`. Separate from `graph.app` (CLI, no checkpointer).
+  - `SessionStore` (`Dict[str, Dict]`): `session_id → AgentState` mapping. Created on first `POST /api/v1/chat`.
+  - `get_or_create_session(session_id)`: Returns existing or fresh `AgentState`-compatible dict.
+  - `get_agent_app()`: `Depends` factory → `app_with_memory`.
+  - `get_embeddings()`: `Depends` factory → `_embeddings`.
+
+### 7. [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py)
+- **Role:** All HTTP endpoints, Pydantic I/O schemas, SSE formatters, and async streaming generators.
+- **Important:** `from __future__ import annotations` is intentionally **absent** — Pydantic v2 requires eager type evaluation; schemas are defined before `router = APIRouter()`.
+- **Pydantic Schemas:**
+  - `ChatRequest`: `session_id` + `message` (1–4,000 chars).
+  - `AdvocateRequest`: `session_id` + `product_name` (1–200 chars).
+  - `SessionStateResponse`: Read-only session snapshot.
+- **SSE Helpers:** `_sse_token()`, `_sse_done()`, `_sse_error()`, `_sse_status()` — RFC 8895 `event:/data:` frame formatters.
+- **Streaming Generators:**
+  - `_stream_interview_phase()`: Iterates `app_with_memory.astream_events()`, forwards `on_chat_model_stream` chunks as SSE `token` frames. Emits `status` frames on `search_and_vault_node` entry/exit.
+  - `_stream_rag_phase()`: ChromaDB retrieval in `asyncio.to_thread()`, rebuilds `comparison_agent_node` message chain, streams `llm.astream()` tokens.
+  - `_stream_advocate_phase()`: `_harvest_and_triage_forum_data` in `asyncio.to_thread()`, retrieves forum critique chunks, streams adversarial LLM response.
+- **Routes:**
+
+| Method | Path | Rate Limit | Description |
+|--------|------|-----------|-------------|
+| `GET` | `/health` | — | Liveness probe |
+| `GET` | `/api/v1/session/{session_id}` | — | `SessionStateResponse` snapshot |
+| `POST` | `/api/v1/chat` | 20/min | SSE stream — interview or RAG phase |
+| `POST` | `/api/v1/advocate` | 20/min | SSE stream — Devil's Advocate critique |
+
+### 8. [api/server.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/server.py)
+- **Role:** FastAPI application factory and middleware stack.
+- **Key Configuration:**
+  - `lifespan`: imports `api.dependencies` at startup (triggers embedding warm-up + graph compilation) and logs readiness banner.
+  - `CORSMiddleware`: `allow_origins=["*"]` for local dev (lock down to specific origin in production).
+  - `SlowAPIMiddleware` + `app.state.limiter`: `slowapi` 20 req/min per IP on chat/advocate routes — protects Gemini and Tavily free-tier quotas.
+  - Global `Exception` handler: clean `{"detail": "..."}` JSON instead of 500 stack traces.
 
 ---
 
@@ -107,10 +145,10 @@ The Product Intelligence Vault is backed by local disk storage (`./data/chroma_v
 
 | Metadata Field | Type | Description / Usage |
 | :--- | :--- | :--- |
-| `product_id` | `str` | MD5 hash of source URL (spec files) or product name (critiques). Enables cache evaluation. |
+| `product_id` | `str` | MD5 hash of source URL (spec files) or product name (critiques). Enables idempotent cache checks. |
 | `product_name` | `str` | Canonical product name (e.g. `"Keychron K6"`). |
 | `category` | `str` | Product classification category. |
-| `source_url` | `str` | Original crawler URL or `"synthesised_spec_card"` for structural sheets. |
-| `chunk_type` | `str` | Routes retrieval: `"spec_dense"`, `"narrative"`, `"spec_card"` (structured spec tables), or `"forum_critique"` (Reddit/forum complaints). |
-| `classification` | `str` | *Only on critiques.* Insight type (e.g. `"Constructive Criticism"`). |
-| `severity_weight`| `int` | *Only on critiques.* Issue rating (1 to 5). |
+| `source_url` | `str` | Original crawler URL or `"synthesised_spec_card"` for LLM-generated spec tables. |
+| `chunk_type` | `str` | Routes retrieval: `"spec_dense"`, `"narrative"`, `"spec_card"`, or `"forum_critique"`. |
+| `classification` | `str` | *Critiques only.* Insight type (e.g. `"Constructive Criticism"`). |
+| `severity_weight` | `int` | *Critiques only.* Issue severity rating 1–5. |
