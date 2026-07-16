@@ -1,0 +1,258 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* AI Product Concierge Custom Colors */
+  --color-bg-base: var(--bg-base);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-subtle: var(--bg-subtle);
+
+  --color-border-default: var(--border-default);
+  --color-border-bright: var(--border-bright);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+
+  --color-accent-primary: var(--accent-primary);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-accent-surface: var(--accent-surface);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+}
+
+:root {
+  --font-display: "Syne", system-ui, sans-serif;
+  --font-body: "DM Sans", system-ui, sans-serif;
+
+  /* Mode A: STANDARD (dark default) */
+  --bg-base:        #08090C;   /* Near-void black */
+  --bg-surface:     #0F1117;   /* Panel background */
+  --bg-elevated:    #161820;   /* Cards, elevated content */
+  --bg-subtle:      #1C1E27;   /* Hover states */
+
+  --border-default: #252830;
+  --border-bright:  #353845;
+
+  --text-primary:   #F0F1F5;
+  --text-secondary: #8A8FA8;
+  --text-muted:     #545870;
+
+  --accent-primary:   #5B6BF8;   /* Primary CTA, active states */
+  --accent-secondary: #8B9BFF;   /* Hover glow, subtle tints */
+  --accent-surface:   #0D0F2B;   /* Tinted panel backgrounds */
+
+  --success:        #22C55E;
+  --warning:        #F59E0B;
+  --danger:         #EF4444;
+
+  /* Radix / Shadcn variables mappings */
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --card: var(--bg-elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-surface);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-primary);
+  --primary-foreground: #FFFFFF;
+  --secondary: var(--bg-subtle);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-surface);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--accent-surface);
+  --accent-foreground: var(--accent-secondary);
+  --destructive: var(--danger);
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--accent-primary);
+
+  --radius: 12px;
+
+  --sidebar: var(--bg-surface);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-primary);
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: var(--bg-subtle);
+  --sidebar-accent-foreground: var(--accent-secondary);
+  --sidebar-border: var(--border-default);
+  --sidebar-ring: var(--accent-primary);
+}
+
+.light {
+  /* Mode C: LIGHT */
+  --bg-base:        #F4F5F9;
+  --bg-surface:     #FFFFFF;
+  --bg-elevated:    #F8F9FC;
+  --bg-subtle:      #EDEEF4;
+  --border-default: #DDE0EA;
+  --border-bright:  #C9CDD9;
+  --text-primary:   #0F1117;
+  --text-secondary: #4A4F68;
+  --text-muted:     #9095AF;
+  --accent-primary:   #4A5AF0;
+  --accent-secondary: #6B7BFF;
+  --accent-surface:   #EEF0FE;
+
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --card: var(--bg-surface);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-surface);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-primary);
+  --primary-foreground: #FFFFFF;
+  --secondary: var(--bg-subtle);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-elevated);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--accent-surface);
+  --accent-foreground: var(--accent-secondary);
+  --destructive: var(--danger);
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--accent-primary);
+
+  --sidebar: var(--bg-surface);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-primary);
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: var(--bg-subtle);
+  --sidebar-accent-foreground: var(--accent-secondary);
+  --sidebar-border: var(--border-default);
+  --sidebar-ring: var(--accent-primary);
+}
+
+.devil-mode {
+  /* Mode B: DEVIL'S ADVOCATE */
+  --bg-base:        #0A0404;
+  --bg-surface:     #110808;
+  --bg-elevated:    #1A0C0C;
+  --bg-subtle:      #220E0E;
+  --border-default: #3D1515;
+  --border-bright:  #5C2020;
+  --text-primary:   #F5EDED;
+  --text-secondary: #B08080;
+  --accent-primary:   #DC2626;
+  --accent-secondary: #EF4444;
+  --accent-surface:   #200808;
+
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --card: var(--bg-elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-surface);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-primary);
+  --primary-foreground: #FFFFFF;
+  --secondary: var(--bg-subtle);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-surface);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--accent-surface);
+  --accent-foreground: var(--accent-secondary);
+  --destructive: var(--accent-primary);
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--accent-primary);
+
+  --sidebar: var(--bg-surface);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-primary);
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: var(--bg-subtle);
+  --sidebar-accent-foreground: var(--accent-secondary);
+  --sidebar-border: var(--border-default);
+  --sidebar-ring: var(--accent-primary);
+}
+
+@layer base {
+  * {
+    @apply border-border/80 transition-colors duration-200 outline-none;
+  }
+  body {
+    @apply bg-background text-foreground font-body select-none overflow-x-hidden;
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+  html {
+    @apply h-full antialiased;
+    font-size: 16px;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display tracking-tight text-text-primary;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-bright);
+}
+
+/* Custom pulsing blinking cursor */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.streaming-cursor::after {
+  content: "▊";
+  @apply text-accent-primary ml-1;
+  animation: blink 1s infinite;
+}
