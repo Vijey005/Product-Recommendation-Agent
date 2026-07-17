@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -52,6 +53,23 @@ from agent.state import AgentState
 # ─── Tuneable constants ───────────────────────────────────────────────────────
 # Minimum filled constraint fields before the agent considers the profile done.
 COMPLETION_THRESHOLD = 5
+
+# ─── Live Progress Callback Registry ─────────────────────────────────────────
+# routes.py registers a sync callable per session before graph execution.
+# search_and_vault_node calls it with a progress string at each key milestone.
+# The callable is thread-safe: it pushes into an asyncio.Queue via
+# loop.call_soon_threadsafe, so the SSE generator can drain it.
+_PROGRESS_CALLBACKS: Dict[str, Any] = {}
+
+
+def register_progress_cb(session_id: str, cb) -> None:  # noqa: ANN001
+    """Register a progress callback for a session before graph execution."""
+    _PROGRESS_CALLBACKS[session_id] = cb
+
+
+def unregister_progress_cb(session_id: str) -> None:
+    """Remove the progress callback after the stream completes."""
+    _PROGRESS_CALLBACKS.pop(session_id, None)
 
 # ChromaDB vault directory (relative to project root — persists across sessions)
 VAULT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "chroma_vault")
@@ -414,29 +432,26 @@ def question_generator_node(state: AgentState) -> Dict[str, Any]:
         "You are an expert shopping concierge — knowledgeable, friendly, and concise. "
         "Your job is to gather enough information to make a perfect product recommendation. "
         "\n\n"
+        f"[Internal context — do not reveal to user]\n"
+        f"Already collected: {filled}\n"
+        f"Still missing: {missing}\n"
+        f"Current constraints: {constraints.model_dump()}\n\n"
         "RULES:\n"
         "1. Ask ONLY ONE question per turn. Never ask two questions at once.\n"
         "2. Make the question feel natural and conversational — not like a form.\n"
-        "3. Always offer 3\u20134 numbered options AND an 'open text' escape hatch "
-        "   (e.g. '5. Something else \u2014 tell me!').\n"
+        "3. Always offer 3–4 numbered options AND an 'open text' escape hatch "
+        "   (e.g. '5. Something else — tell me!').\n"
         "4. Prioritise the most impactful missing detail: start with product_category, "
         "   then primary_use_case, then budget_max, then the rest.\n"
         "5. Never repeat a question that has already been answered.\n"
         "6. If the profile is not complete, actively ask clarifying questions about missing critical preferences, such as Operating System (iOS vs. Android), battery life, screen size, or storage capacity. Offer structured multiple-choice options for these new questions to guide the user effectively.\n"
-        "7. When asking about budget or prices, ALWAYS use Indian Rupees (INR, \u20b9). Never use Dollars ($).\n"
+        "7. When asking about budget or prices, ALWAYS use Indian Rupees (INR, ₹). Never use Dollars ($).\n"
         "8. Keep your response under 120 words."
     ))
 
-    context_message = AIMessage(content=(
-        f"[Internal context \u2014 do not reveal to user]\n"
-        f"Already collected: {filled}\n"
-        f"Still missing: {missing}\n"
-        f"Current constraints: {constraints.model_dump()}"
-    ))
+    messages = [system_prompt] + state["chat_history"]
 
-    messages = [system_prompt] + state["chat_history"] + [context_message]
-
-    response = _get_llm_creative().invoke(messages)
+    response = _get_llm_creative().invoke(messages, config={"tags": ["question_generator_stream"]})
     question_text = response.content
 
     if isinstance(question_text, list):
@@ -976,27 +991,48 @@ def _harvest_single_model(
 
 def search_and_vault_node(
     state: AgentState,
+    config: RunnableConfig | None = None,
     embeddings: HuggingFaceEmbeddings | None = None,
 ) -> Dict[str, Any]:
     """
-    Phase 2.5 \u2014 Four-Layer Product Harvesting Engine.
+    Phase 2.5 — Four-Layer Product Harvesting Engine.
 
-    STAGE 1 \u2014 Product Discovery:
+    STAGE 1 — Product Discovery:
       1a. LLM generates a broad, India-centric discovery query.
       1b. Tavily returns top article snippets.
       1c. LLM (Product Curator) extracts 5-6 specific qualifying models.
 
-    STAGE 2 \u2014 Per-Product Spec Harvester (four layers):
-      Layer 1 \u2014 Category-aware query template generation (one LLM call).
-      Layer 2 \u2014 Multi-query execution with URL deduplication per model.
-      Layer 3 \u2014 Adaptive chunking + spec card synthesis per model.
-      Layer 4 \u2014 Post-harvest coverage verification + supplementary search.
+    STAGE 2 — Per-Product Spec Harvester (four layers):
+      Layer 1 — Category-aware query template generation (one LLM call).
+      Layer 2 — Multi-query execution with URL deduplication per model.
+      Layer 3 — Adaptive chunking + spec card synthesis per model.
+      Layer 4 — Post-harvest coverage verification + supplementary search.
 
-    STAGE 3 \u2014 State Update:
+    STAGE 3 — State Update:
       Set retrieved_products to the curated model list and flip is_rag_mode.
     """
     if embeddings is not None:
         _get_embeddings(embeddings)
+
+    # ── Look up the live progress callback for this session ───────────────────
+    configurable = config.configurable if config and hasattr(config, "configurable") else {}
+    if not configurable and isinstance(config, dict):
+        configurable = config.get("configurable", {})
+    session_id = (
+        configurable.get("session_id")
+        or configurable.get("thread_id")
+        or state.get("session_id", "")
+    )
+    _emit = _PROGRESS_CALLBACKS.get(session_id)
+
+    def emit(msg: str) -> None:
+        """Thread-safe progress event emitter — no-op if no callback registered."""
+        print(msg)  # Always log to console too
+        if _emit:
+            try:
+                _emit(msg)
+            except Exception:
+                pass
 
     constraints = ProductConstraints(**state.get("constraints", {}))
     tavily = _get_tavily()
@@ -1034,8 +1070,9 @@ def search_and_vault_node(
     # ══════════════════════════════════════════════════════════════════════════
 
     print(f"\n  {'\u2550'*58}")
-    print(f"  \ud83d\udce1  STAGE 1 \u2014 Product Discovery")
+    print(f"  📡  STAGE 1 — Product Discovery")
     print(f"  {'\u2550'*58}")
+    emit("🔍 Stage 1 — Building your discovery search query...")
 
     query_gen_prompt = SystemMessage(content=(
         f"The current date is {current_month} {current_year}. "
@@ -1068,8 +1105,9 @@ def search_and_vault_node(
             parts.append(f"under \u20b9{int(constraints.budget_max):,}")
         discovery_query = f"best {' '.join(parts)} India {current_year}"
 
-    print(f"\n  \ud83d\udd0d  Discovery Query: \"{discovery_query}\"")
-    print("  \u23f3  Searching\u2026\n")
+    print(f"\n  🔍  Discovery Query: \"{discovery_query}\"")
+    print("  ⏳  Searching...\n")
+    emit(f"🔎 Searching the web for: '{discovery_query}'")
 
     try:
         search_resp = tavily.search(
@@ -1155,6 +1193,7 @@ def search_and_vault_node(
     for i, m in enumerate(discovered_models, 1):
         print(f"       {i}. {m}")
     print()
+    emit(f"✅ Found {len(discovered_models)} matching products — starting deep spec harvest")
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2 — PER-PRODUCT SPEC HARVESTER (FOUR-LAYER SYSTEM)
@@ -1162,6 +1201,7 @@ def search_and_vault_node(
     print(f"  {'\u2550'*58}")
     print(f"  🗄️  STAGE 2 — Specification Harvester")
     print(f"  {'\u2550'*58}\n")
+    emit(f"📡 Stage 2 — Harvesting specs for {len(discovered_models)} products in parallel...")
 
     category = category_str
     vaulted_count = 0
@@ -1211,6 +1251,8 @@ def search_and_vault_node(
                 )
                 if result["error"]:
                     print(f"       ⚠️  Error: {result['error']}")
+                ok = not result["error"]
+                emit(f"{'✅' if ok else '⚠️'} Harvested {model} — {result['chunks_written']} chunks from {result['urls_found']} pages")
 
             except Exception as exc:
                 print(f"  ⚠️   {model}: unexpected error — {exc}")
@@ -1236,6 +1278,7 @@ def search_and_vault_node(
     if models_to_synthesise:
         print(f"  🧠  Sequential spec extraction for {len(models_to_synthesise)} model(s) "
               f"(3 s rate-limit gap between calls)...\n")
+        emit(f"🧠 Stage 2b — Extracting structured spec cards for {len(models_to_synthesise)} products...")
 
         for model in models_to_synthesise:
             raw_text = harvest_results[model]["all_page_texts"]
@@ -1289,6 +1332,7 @@ def search_and_vault_node(
                         )
                     harvest_results[model]["spec_card_chars"] = len(spec_card_text)
                     print(f"       ✅  Spec card vaulted for {model} ({len(spec_card_text)} chars)")
+                    emit(f"📋 Spec card indexed: {model}")
                 else:
                     print(f"       ⚠️  Empty spec card returned for {model} — skipping vault.")
 
@@ -1304,8 +1348,9 @@ def search_and_vault_node(
     # LAYER 4 \u2014 POST-HARVEST COVERAGE VERIFICATION
     # ══════════════════════════════════════════════════════════════════════════
     print(f"\n  {'\u2550'*58}")
-    print(f"  \ud83d\udd0d  STAGE 3 \u2014 Coverage Verification")
+    print(f"  🔍  STAGE 3 \u2014 Coverage Verification")
     print(f"  {'\u2550'*58}\n")
+    emit("🔄 Stage 3 — Verifying coverage and running supplementary searches...")
 
     vs = _get_vectorstore()
     underserved_models: List[str] = []
@@ -1321,14 +1366,14 @@ def search_and_vault_node(
             underserved_models.append(model)
 
     if underserved_models:
-        print(f"\n  \ud83d\udd04  Running supplementary search for {len(underserved_models)} underserved model(s)...")
+        print(f"\n  🔄  Running supplementary search for {len(underserved_models)} underserved model(s)...")
 
         for model in underserved_models:
             supplementary_query = (
                 f"{model} specifications technical details "
                 f"India {current_year}"
             )
-            print(f"  \ud83d\udd0e  Supplementary: \"{supplementary_query}\"")
+            print(f"  🔎  Supplementary: \"{supplementary_query}\"")
 
             try:
                 supp_resp = tavily.search(
@@ -1383,12 +1428,12 @@ def search_and_vault_node(
     )
 
     overview = (
-        f"\ud83e\udde0 **Product Intelligence Vault is ready!** "
+        f"🧠 **Product Intelligence Vault is ready!** "
         f"I've deeply indexed specifications for {len(discovered_models)} products "
         f"({vaulted_count} page(s) vaulted).\n\n"
-        f"**\ud83d\udcf1 Discovered Models:**\n{product_list_md}\n\n"
-        "You can now ask me anything \u2014 comparisons, specs, pros & cons, battery life, "
-        "price breakdown \u2014 and I'll answer strictly from the crawled data."
+        f"**📱 Discovered Models:**\n{product_list_md}\n\n"
+        "You can now ask me anything — comparisons, specs, pros & cons, battery life, "
+        "price breakdown — and I'll answer strictly from the crawled data."
     )
 
     separator = "\u2500" * 60

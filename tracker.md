@@ -271,3 +271,36 @@ Fix a `PydanticUserError: TypeAdapter[...ForwardRef('ChatRequest')...] is not fu
 ### 🧠 Technical Decisions & Notes
 - No async logic, SSE generators, or `asyncio.to_thread` wrappers were changed — this was a purely structural file-reordering fix.
 - The fix is confirmed by a post-patch import validation: `ChatRequest`, `AdvocateRequest`, `SessionStateResponse`, and all 4 router routes (`/health`, `/api/v1/session/{id}`, `/api/v1/chat`, `/api/v1/advocate`) load without errors.
+
+---
+
+## Phase 3.1: Live Progress Streaming & UI Robustness
+**Status:** Completed  
+**Date:** July 17, 2026  
+
+### 🎯 Goal
+Improve the user experience during long-running crawler execution by adding a live progress tracking panel dynamically updated via Server-Sent Events (SSE). Refactor session resumption to load chat history on the client side and harden the UI against sparse backend database responses.
+
+### 📝 Files Changed
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Thread-safe callback registry:** Introduced a `_PROGRESS_CALLBACKS` dictionary and `register_progress_cb`/`unregister_progress_cb` hook functions.
+  - **Milestone emission:** Instrumented `search_and_vault_node` to trigger thread-safe `emit` callbacks during key crawler events (Stage 1 discovery, Tavily retrieval, per-model harvesting completion, spec card synthesis, coverage verification).
+- [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py):
+  - **Live Progress SSE Frame:** Added `_sse_progress()` helper to format events as `event: progress` on the wire.
+  - **Queue-based concurrent generator:** Updated `_stream_interview_phase` to launch parallel async tasks `run_graph` and `run_progress` draining updates into a merged `output_q` queue, yielding progress events and LLM tokens simultaneously.
+  - **Chat History Serialization:** Updated `get_session` response mapping to serialize and return the formatted messages array.
+- [advisor-ui/src/hooks/useSSE.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/hooks/useSSE.ts):
+  - **Progress Event Dispatcher:** Wired the parser to capture `event: progress` events and trigger `onProgress` callbacks. Added `NEXT_PUBLIC_API_URL` prefix fallbacks.
+- [advisor-ui/src/components/search/VaultBuildingAnimation.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/search/VaultBuildingAnimation.tsx):
+  - **Dynamic Step Feed:** Replaced the static local loader animation with a live list driven by progress steps received from the API.
+- [advisor-ui/src/store/advisorStore.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/store/advisorStore.ts):
+  - **State Hydration:** Exposed a `setChatHistory` mutation to hydrate message history when loaded from existing sessions.
+- [advisor-ui/src/app/(advisor)/chat/[sessionId]/page.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/app/(advisor)/chat/[sessionId]/page.tsx):
+  - **Scraper Overlay:** Integrated live progress updates to show the crawler progress overlay during search states.
+  - **Intelligent Chips & Input Handling:** Contextualized interview chips based on the latest assistant message keywords. Streamlined message dispatch logic.
+- [advisor-ui/src/components/vault/ProductCard.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductCard.tsx):
+  - **Null-safety Fallbacks:** Implemented robust fallbacks for sparse database fields (e.g. image URLs, rating counts, default pricing metrics) to prevent layout crashes.
+
+### 🧠 Technical Decisions & Notes
+- **Event Loop Thread Bridging:** Used `loop.call_soon_threadsafe(queue.put_nowait, msg)` to bridge synchronous thread-pool workers (LangGraph node) back into FastAPI's asynchronous event loop.
+- **Concurrent Task Merging:** Handled concurrent tasks using `asyncio.Queue` so that the event generator yields progress updates instantly as they occur without stalling the LangGraph execution stream.

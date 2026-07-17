@@ -56,6 +56,9 @@ from agent.nodes import (
     RECOMMENDATION_KEYWORDS,
     _has_intent,
     _format_budget,
+    search_and_vault_node,
+    register_progress_cb,
+    unregister_progress_cb,
 )
 from agent.models import ProductConstraints
 from api.dependencies import (
@@ -67,6 +70,11 @@ from api.dependencies import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Per-session asyncio queues for live search progress events
+# The search_and_vault_node runs in a thread; it pushes strings here via a sync callback.
+# The SSE generator drains the queue and forwards them to the client.
+ProgressQueues: Dict[str, asyncio.Queue] = {}
 
 # ─── Rate Limiter ─────────────────────────────────────────────────────────────
 # The Limiter instance must be created here AND registered on the FastAPI app
@@ -117,6 +125,7 @@ class SessionStateResponse(BaseModel):
     retrieved_products: List[Dict[str, Any]]
     constraints: Dict[str, Any]
     message_count: int
+    chat_history: List[Dict[str, Any]] = []
 
 
 # ─── Router ───────────────────────────────────────────────────────────────────
@@ -140,7 +149,7 @@ def _sse_event(data: Any, event: str = "message") -> str:
 
     The client EventSource parses this and fires `evt.data` as the JSON string.
     """
-    payload = json.dumps(data, ensure_ascii=False)
+    payload = json.dumps(data, ensure_ascii=True)
     return f"event: {event}\ndata: {payload}\n\n"
 
 
@@ -167,6 +176,14 @@ def _sse_status(message: str) -> str:
     return _sse_event({"type": "status", "message": message}, event="status")
 
 
+def _sse_progress(message: str) -> str:
+    """
+    Live search progress frame — one per step inside search_and_vault_node.
+    The animation panel renders each step as it arrives, in real time.
+    """
+    return _sse_event({"type": "progress", "message": message}, event="progress")
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # STREAMING GENERATORS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -184,52 +201,109 @@ async def _stream_interview_phase(
     checkpoint, preserving conversation history across HTTP calls.
 
     Yields SSE frames:
-      • token frames   — each text chunk from the LLM as it generates
-      • status frames  — node entry/exit for long-running vault search
-      • done frame     — includes updated session metadata
+      • token frames    — each text chunk from the LLM as it generates
+      • status frames   — node entry/exit for long-running vault search
+      • progress frames — live granular steps from inside search_and_vault_node
+      • done frame      — includes updated session metadata
     """
-    config = {"configurable": {"thread_id": session_id}}
+    # Pass both thread_id (for checkpoints) and session_id (for progress registry lookups)
+    config = {"configurable": {"thread_id": session_id, "session_id": session_id}}
+
+    # Create a fresh progress queue for this session so search_and_vault_node
+    # can push live step strings from its thread into the async event loop.
+    progress_q: asyncio.Queue = asyncio.Queue()
+    ProgressQueues[session_id] = progress_q
+
+    # Capture the running event loop so the worker thread can push into it
+    loop = asyncio.get_event_loop()
+
+    def _push_progress(msg: str) -> None:
+        """Called from search_and_vault_node's thread. Thread-safe."""
+        loop.call_soon_threadsafe(progress_q.put_nowait, msg)
+
+    # Register the callback BEFORE the graph runs so the node can find it
+    register_progress_cb(session_id, _push_progress)
 
     full_response = ""
     final_state: Dict[str, Any] = {}
+    output_q = asyncio.Queue()
+
+    async def run_graph():
+        try:
+            async for event in agent.astream_events(state, config=config, version="v2"):
+                await output_q.put({"type": "graph_event", "data": event})
+        except Exception as e:
+            await output_q.put({"type": "error", "error": e})
+        finally:
+            await output_q.put({"type": "graph_done"})
+
+    async def run_progress():
+        while True:
+            msg = await progress_q.get()
+            await output_q.put({"type": "progress_event", "message": msg})
+            progress_q.task_done()
+
+    graph_task = asyncio.create_task(run_graph())
+    progress_task = asyncio.create_task(run_progress())
 
     try:
-        async for event in agent.astream_events(state, config=config, version="v2"):
-            kind = event.get("event", "")
-            name = event.get("name", "")
+        while True:
+            item = await output_q.get()
+            
+            if item["type"] == "graph_done":
+                break
+                
+            elif item["type"] == "error":
+                raise item["error"]
+                
+            elif item["type"] == "progress_event":
+                yield _sse_progress(item["message"])
+                
+            elif item["type"] == "graph_event":
+                event = item["data"]
+                kind = event.get("event", "")
+                name = event.get("name", "")
 
-            # ── Token stream ──────────────────────────────────────────────────
-            if kind == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                if chunk and hasattr(chunk, "content"):
-                    content = chunk.content
-                    # Gemini may return list-format content parts
-                    if isinstance(content, list):
-                        content = "".join(
-                            p if isinstance(p, str) else p.get("text", "")
-                            for p in content
-                        )
-                    if content:
-                        full_response += content
-                        yield _sse_token(content)
+                # ── Token stream ──────────────────────────────────────────────────
+                if kind == "on_chat_model_stream":
+                    tags = event.get("tags", [])
+                    if "question_generator_stream" not in tags:
+                        continue
+                    chunk = event.get("data", {}).get("chunk")
+                    if chunk and hasattr(chunk, "content"):
+                        content = chunk.content
+                        # Gemini may return list-format content parts
+                        if isinstance(content, list):
+                            content = "".join(
+                                p if isinstance(p, str) else p.get("text", "")
+                                for p in content
+                            )
+                        if content:
+                            full_response += content
+                            yield _sse_token(content)
 
-            # ── Node status signals ───────────────────────────────────────────
-            elif kind == "on_chain_start" and name == "search_and_vault_node":
-                yield _sse_status("🔍 Searching for products and building your vault…")
+                # ── Node status signals ───────────────────────────────────────────
+                elif kind == "on_chain_start" and name == "search_and_vault_node":
+                    yield _sse_status("🔍 Starting product search…")
 
-            elif kind == "on_chain_end" and name == "search_and_vault_node":
-                yield _sse_status("✅ Product vault ready!")
+                elif kind == "on_chain_end" and name == "search_and_vault_node":
+                    yield _sse_status("✅ Product vault ready!")
 
-            # ── Capture final graph output ────────────────────────────────────
-            elif kind == "on_chain_end" and name == "LangGraph":
-                output = event.get("data", {}).get("output", {})
-                if isinstance(output, dict):
-                    final_state = output
+                # ── Capture final graph output ────────────────────────────────────
+                elif kind == "on_chain_end" and name == "LangGraph":
+                    output = event.get("data", {}).get("output", {})
+                    if isinstance(output, dict):
+                        final_state = output
 
     except Exception as exc:
         logger.exception("Interview stream error for session %s", session_id)
         yield _sse_error(f"Stream interrupted: {exc}")
         return
+    finally:
+        # Cancel progress listener task and clean up
+        progress_task.cancel()
+        ProgressQueues.pop(session_id, None)
+        unregister_progress_cb(session_id)
 
     # ── Persist updated state ─────────────────────────────────────────────────
     if final_state:
@@ -257,7 +331,10 @@ async def _stream_interview_phase(
         "is_rag_mode":         state.get("is_rag_mode", False),
         "is_profile_complete": state.get("is_profile_complete", False),
         "retrieved_products":  state.get("retrieved_products", []),
+        "constraints":         state.get("constraints", {}),
     })
+
+
 
 
 async def _stream_rag_phase(
@@ -694,6 +771,33 @@ async def get_session(session_id: str):
             detail=f"Session '{session_id}' not found. Send a POST /api/v1/chat first.",
         )
     state = SessionStore[session_id]
+    
+    # Serialize chat history cleanly for the frontend
+    serialized_history = []
+    for idx, msg in enumerate(state.get("chat_history", [])):
+        role = "assistant"
+        if hasattr(msg, "type"):
+            role = "user" if msg.type == "human" else "assistant"
+        elif "human" in str(type(msg)).lower():
+            role = "user"
+        
+        content = ""
+        if hasattr(msg, "content"):
+            content = msg.content
+            if isinstance(content, list):
+                content = " ".join(
+                    p if isinstance(p, str) else p.get("text", "")
+                    for p in content
+                )
+        else:
+            content = str(msg)
+            
+        serialized_history.append({
+            "id": f"msg-{idx}",
+            "role": role,
+            "content": content
+        })
+
     return SessionStateResponse(
         session_id=session_id,
         is_profile_complete=state.get("is_profile_complete", False),
@@ -702,6 +806,7 @@ async def get_session(session_id: str):
         retrieved_products=state.get("retrieved_products", []),
         constraints=state.get("constraints", {}),
         message_count=len(state.get("chat_history", [])),
+        chat_history=serialized_history,
     )
 
 

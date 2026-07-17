@@ -6,6 +6,7 @@ import { streamMockResponse } from "@/lib/mockData";
 interface SSEOptions {
   onToken?: (token: string) => void;
   onStatus?: (status: string) => void;
+  onProgress?: (step: string) => void;
   onDone?: (metadata: any) => void;
   onError?: (error: string) => void;
 }
@@ -31,7 +32,7 @@ export function useSSE() {
       const abortCtrl = new AbortController();
       setController(abortCtrl);
 
-      const { onToken, onStatus, onDone, onError } = options;
+      const { onToken, onStatus, onProgress, onDone, onError } = options;
 
       if (useMock) {
         try {
@@ -119,7 +120,9 @@ export function useSSE() {
 
       // Real API connection
       try {
-        const response = await fetch(url, {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const fullUrl = url.startsWith("http") ? url : `${apiBase}${url}`;
+        const response = await fetch(fullUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -170,6 +173,8 @@ export function useSSE() {
                 
                 if (eventType === "status") {
                   onStatus?.(parsed.message || "");
+                } else if (eventType === "progress") {
+                  onProgress?.(parsed.message || "");
                 } else if (eventType === "error") {
                   onError?.(parsed.message || "Unknown stream error");
                 } else {
@@ -178,6 +183,8 @@ export function useSSE() {
                     onToken?.(parsed.content || "");
                   } else if (parsed.type === "done") {
                     onDone?.(parsed);
+                  } else if (parsed.type === "progress") {
+                    onProgress?.(parsed.message || "");
                   } else if (parsed.type === "status") {
                     onStatus?.(parsed.message || "");
                   } else if (parsed.type === "error") {

@@ -18,6 +18,7 @@ interface AdvisorState {
   toggleDevilMode: () => void;
   setDevilMode: (active: boolean) => void;
   appendMessage: (msg: Message) => void;
+  setChatHistory: (history: Message[]) => void;
   updateLastMessage: (content: string) => void;
   setProducts: (products: Product[]) => void;
   setActiveProduct: (id: string | null) => void;
@@ -44,6 +45,7 @@ export const useAdvisorStore = create<AdvisorState>((set) => ({
   setDevilMode: (active) => set({ isDevilMode: active }),
   appendMessage: (msg) =>
     set((state) => ({ chatHistory: [...state.chatHistory, msg] })),
+  setChatHistory: (history) => set({ chatHistory: history }),
   updateLastMessage: (content) =>
     set((state) => {
       const history = [...state.chatHistory];
