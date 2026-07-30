@@ -108,6 +108,53 @@ FORUM_CHUNK_OVERLAP = 50
 ADVOCATE_TOP_K = 25
 
 
+# ─── Price Extraction Utility ─────────────────────────────────────────────────
+
+def _extract_price_inr(text: str) -> int | None:
+    """
+    Scan raw text (spec card Markdown, Tavily snippet, page text) for an Indian
+    retail price and return it as a plain integer INR value.
+
+    Handles formats:
+      ₹54,999  |  Rs. 54999  |  INR 54,999  |  54999 rupees  |  MRP ₹54,999
+    Returns None if no credible price found.
+    """
+    if not text:
+        return None
+
+    # Normalise text: collapse whitespace, strip zero-width chars
+    t = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
+    t = re.sub(r"\s+", " ", t)
+
+    patterns = [
+        # ₹ or Rs followed by optional whitespace and digits with commas
+        r"(?:₹|Rs\.?\s*|INR\s*)(\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d{4,7}(?:\.\d{1,2})?)",
+        # digits followed by "rupees" / "inr"
+        r"(\d{1,3}(?:,\d{2,3})+|\d{4,7})\s*(?:rupees?|INR|inr)\b",
+    ]
+
+    candidates: list[int] = []
+    for pat in patterns:
+        for m in re.finditer(pat, t, re.IGNORECASE):
+            raw = m.group(1).replace(",", "").split(".")[0]
+            try:
+                val = int(raw)
+                # Sanity: Indian phone/laptop price range ₹5,000 – ₹5,00,000
+                if 5_000 <= val <= 500_000:
+                    candidates.append(val)
+            except ValueError:
+                pass
+
+    if not candidates:
+        return None
+
+    # Return the most frequently appearing value; break ties by minimum (most-listed MRP)
+    from collections import Counter
+    freq = Counter(candidates)
+    max_freq = max(freq.values())
+    most_common = [v for v, c in freq.items() if c == max_freq]
+    return min(most_common)
+
 # ─── Phase 2.75: Forum Analytics Pydantic Schemas ───────────────────────────
 
 class ForumInsight(BaseModel):
@@ -584,6 +631,7 @@ def _generate_harvest_queries(
         "{model} processor performance benchmark review India " + current_year,
         "{model} price features pros cons India " + current_year,
         "{model} user review rating long term India " + current_year,
+        "{model} price India ₹ INR " + current_year,
     ]
 
     try:
@@ -628,6 +676,11 @@ def _generate_harvest_queries(
             item for item in parsed
             if isinstance(item, str) and "{model}" in item
         ]
+        
+        # Ensure we always include a dedicated pricing query (BUG-7 fix: single condition, no duplicate)
+        price_query = f"{{model}} price India ₹ INR {current_year}"
+        if not any("price" in q.lower() and "india" in q.lower() for q in valid):
+            valid.append(price_query)
 
         if len(valid) >= 3:
             return valid
@@ -677,13 +730,13 @@ def _synthesise_spec_card(
     collected during the harvest loop.
 
     Returns the Markdown table string if successful, None otherwise.
-    Truncates combined input to 12000 characters to stay within context limits.
+    Truncates combined input to 24000 characters to stay within context limits.
     """
     if not all_page_texts:
         return None
 
     combined_text = "\n\n---\n\n".join(all_page_texts)
-    combined_text = combined_text[:12000]  # hard cap for context safety
+    combined_text = combined_text[:24000]  # BUG-2 fix: raised from 12K→24K — Gemini 2.5 Flash handles 1M tokens
 
     try:
         response = llm.invoke([
@@ -693,8 +746,11 @@ def _synthesise_spec_card(
                 "Return a clean Markdown table with two columns: "
                 "Specification | Value. "
                 "Include every measurable spec you can find. "
-                "Do not include opinions, marketing language, or prices in this table. "
-                "If a value is not present in the text, omit that row entirely \u2014 "
+                # BUG-1 fix: price exclusion removed — INR prices are now required in the spec card
+                "PRICE RULE: Include the Indian retail price (INR / ₹) if it is mentioned in the text. "
+                "If only a foreign-currency price is found (USD, RM, SGD, etc.), include it with the original currency symbol. "
+                "Do not include opinions or marketing language. "
+                "If a value is not present in the text, omit that row entirely — "
                 "do not write 'Not available'."
             )),
             HumanMessage(content=(
@@ -803,7 +859,7 @@ def _parallel_synthesise_spec_cards(
         card = _synthesise_spec_card(
             model_name=model_name,
             category=category,
-            all_page_texts=[raw_text],  # _synthesise_spec_card caps internally at 12 KB
+            all_page_texts=[raw_text],  # _synthesise_spec_card caps internally at 24 KB
             llm=llm,
         )
         if card:
@@ -920,7 +976,7 @@ def _harvest_single_model(
             try:
                 resp = tavily.search(
                     query=q,
-                    max_results=2,
+                    max_results=3,  # BUG-5 fix: 3 results per template — richer corpus, same latency
                     search_depth="advanced",
                 )
                 return resp.get("results", [])
@@ -1189,11 +1245,66 @@ def search_and_vault_node(
     if not discovered_models:
         discovered_models = [r.get("title", f"Product {i+1}")[:80] for i, r in enumerate(raw_results[:6])]
 
-    print(f"  ✅  Discovered {len(discovered_models)} candidates:")
+    print(f"  ✅  Discovered {len(discovered_models)} candidates (pre-filter):")
     for i, m in enumerate(discovered_models, 1):
         print(f"       {i}. {m}")
     print()
-    emit(f"✅ Found {len(discovered_models)} matching products — starting deep spec harvest")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 1b — PRICE PRE-FILTER: parallel Tavily price lookup per candidate
+    # Purpose: Drop models whose confirmed Indian price exceeds the budget ceiling
+    #          and build a price dict used later to populate product cards.
+    # ══════════════════════════════════════════════════════════════════════════
+    discovered_prices: Dict[str, int | None] = {}   # model → INR price (or None)
+
+    def _lookup_price(model_name: str) -> tuple[str, int | None]:
+        """Run a targeted Tavily search for this model's Indian retail price."""
+        price_q = f"{model_name} price India INR buy {current_year}"
+        try:
+            resp = tavily.search(query=price_q, max_results=3, search_depth="advanced")
+            combined = " ".join(
+                f"{r.get('title', '')} {r.get('content', '')}"
+                for r in resp.get("results", [])
+            )
+            return model_name, _extract_price_inr(combined)
+        except Exception:
+            return model_name, None
+
+    emit("💰 Verifying Indian market prices for each candidate...")
+    with ThreadPoolExecutor(max_workers=min(len(discovered_models), 6)) as price_ex:
+        price_futures = {price_ex.submit(_lookup_price, m): m for m in discovered_models}
+        for pf in as_completed(price_futures):
+            try:
+                m_name, m_price = pf.result()
+                discovered_prices[m_name] = m_price
+                price_label = f"₹{m_price:,}" if m_price else "price unknown"
+                print(f"  💰  {m_name:<45} {price_label}")
+            except Exception:
+                pass
+
+    # Apply budget filter: drop any model whose confirmed price EXCEEDS ceiling
+    if budget_ceil is not None:
+        pre_filter_count = len(discovered_models)
+        discovered_models = [
+            m for m in discovered_models
+            if (
+                # Keep if price unknown (can't confirm over-budget — include with caveat)
+                discovered_prices.get(m) is None
+                # Keep if confirmed price is within the ceiling (5% grace margin)
+                or discovered_prices[m] <= budget_ceil * 1.05
+            )
+        ]
+        dropped = pre_filter_count - len(discovered_models)
+        if dropped:
+            print(f"\n  🚫  Budget filter removed {dropped} over-budget model(s) (ceiling {budget_ceil_str}).")
+            emit(f"🚫 Filtered out {dropped} product(s) that exceed your budget ceiling — keeping only in-budget options")
+
+    print(f"\n  ✅  {len(discovered_models)} products passing budget gate:")
+    for i, m in enumerate(discovered_models, 1):
+        price_label = f"₹{discovered_prices.get(m):,}" if discovered_prices.get(m) else "price TBC"
+        print(f"       {i}. {m}  [{price_label}]")
+    print()
+    emit(f"✅ {len(discovered_models)} qualifying products — starting deep spec harvest")
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2 — PER-PRODUCT SPEC HARVESTER (FOUR-LAYER SYSTEM)
@@ -1282,7 +1393,7 @@ def search_and_vault_node(
 
         for model in models_to_synthesise:
             raw_text = harvest_results[model]["all_page_texts"]
-            corpus_snippet = raw_text[:12000]
+            corpus_snippet = raw_text[:24000]  # BUG-3 fix: raised from 12K→24K chars
 
             print(f"       ⏳  Extracting spec card: {model}")
             try:
@@ -1292,16 +1403,15 @@ def search_and_vault_node(
                         "Extract ONLY factual, objective specifications from the provided text. "
                         "Return a clean Markdown table with two columns: Specification | Value. "
                         "Include every measurable spec you can find. "
-                        "Do not include opinions, marketing language, or prices in this table. "
+                        "PRICE RULE: Always include the Indian retail price (INR / ₹) if it appears in the text. "
+                        "If only a foreign-currency price appears (USD, RM, SGD, EUR, etc.), include it with its original currency symbol. "
+                        "Do not include opinions or marketing language. "
                         "If a value is not present in the text, omit that row entirely — "
                         "do not write 'Not available'. "
                         "Populate product_name with the exact model name provided in the prompt. "
-                        "FIELD STANDARDIZATION RULE: To prevent comparison matrix lookups from "
-                        "returning 'Not available in data', you must enforce strict standardization "
-                        "of column keys. For any graphics components, processing units, or video "
-                        "cards, always use the explicit column key string 'Graphics Processor (GPU)'. "
-                        "Never leave this field blank if the raw text segments contain any details "
-                        "on GPU configurations, GPU models, or graphics options."
+                        "FIELD STANDARDIZATION RULE: Extract all specific technical metrics (e.g. wattage, memory types, dimensions, weight, power output) with exact values and units. "
+                        "For any graphics components, processing units, or video cards, always use the explicit column key string 'Graphics Processor (GPU)'. "
+                        "Never leave this field blank if the raw text segments contain any details on GPU configurations, GPU models, or graphics options."
                     )),
                     HumanMessage(content=(
                         f"Product: {model}\n\n"
@@ -1370,7 +1480,7 @@ def search_and_vault_node(
 
         for model in underserved_models:
             supplementary_query = (
-                f"{model} specifications technical details "
+                f"{model} {category_str} detailed specifications technical details and price "
                 f"India {current_year}"
             )
             print(f"  🔎  Supplementary: \"{supplementary_query}\"")
@@ -1391,9 +1501,20 @@ def search_and_vault_node(
                     text = _fetch_page_text(url, tavily)
                     if text and not text.startswith("[Content fetch failed"):
                         supp_texts.append(text[:3000])
-                        splitter = RecursiveCharacterTextSplitter(
-                            chunk_size=400, chunk_overlap=50
-                        )
+                        # BUG-6 fix: adaptive chunking — match content type to chunk strategy
+                        supp_content_type = _detect_content_type(text)
+                        if supp_content_type == "spec_dense":
+                            splitter = RecursiveCharacterTextSplitter(
+                                chunk_size=400,
+                                chunk_overlap=50,
+                                separators=["\n\n", "\n", "|", " "],
+                            )
+                        else:
+                            splitter = RecursiveCharacterTextSplitter(
+                                chunk_size=1000,
+                                chunk_overlap=150,
+                                separators=["\n\n", "\n", ". ", " "],
+                            )
                         chunks = splitter.split_text(text)
                         product_id = _url_to_product_id(url)
                         metadatas = [
@@ -1404,13 +1525,14 @@ def search_and_vault_node(
                                 "source_url":   url,
                                 "chunk_index":  ci,
                                 "chunk_type":   "supplementary",
+                                "chunk_type_detail": supp_content_type,
                             }
                             for ci in range(len(chunks))
                         ]
                         ids = [f"{product_id}_supp_{ci}" for ci in range(len(chunks))]
                         with _vault_write_lock:
                             vs.add_texts(texts=chunks, metadatas=metadatas, ids=ids)
-                        print(f"       \u2705  Supplementary: {len(chunks)} chunks added for {model}")
+                        print(f"       \u2705  Supplementary: {len(chunks)} chunks ({supp_content_type}) added for {model}")
             except Exception as exc:
                 print(f"       \u26a0\ufe0f  Supplementary search failed for {model}: {exc}")
 
@@ -1419,12 +1541,48 @@ def search_and_vault_node(
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 3 \u2014 STATE UPDATE & UI SUMMARY
     # ══════════════════════════════════════════════════════════════════════════
+    # ── Price finalisation: prefer spec card price, fall back to pre-filter lookup ──
+    # The spec card was just synthesised — query ChromaDB for each model's spec_card
+    # chunk and try to parse a price row. This gives the most accurate, source-backed
+    # INR value. If the spec card has no price, use the Tavily pre-filter lookup.
+    vs_final = _get_vectorstore()
+    model_final_prices: Dict[str, int | None] = {}
+    for m in discovered_models:
+        try:
+            sc_result = vs_final.get(
+                where={"$and": [
+                    {"product_name": {"$eq": m}},
+                    {"chunk_type":   {"$eq": "spec_card"}},
+                ]}
+            )
+            sc_price = None
+            if sc_result and sc_result.get("documents"):
+                spec_text = sc_result["documents"][0]
+                # Also scan harvested page text for any raw price mentions
+                raw_corpus = harvest_results.get(m, {}).get("all_page_texts", "")
+                sc_price = _extract_price_inr(spec_text) or _extract_price_inr(raw_corpus)
+            model_final_prices[m] = sc_price or discovered_prices.get(m)
+        except Exception:
+            model_final_prices[m] = discovered_prices.get(m)
+
     canonical_products: List[Dict[str, Any]] = [
-        {"name": m, "url": "", "snippet": ""} for m in discovered_models
+        {
+            "name":     m,
+            "url":      "",
+            "snippet":  "",
+            "price":    model_final_prices.get(m),       # real INR int or None
+            "currency": "INR" if model_final_prices.get(m) else None,
+        }
+        for m in discovered_models
     ]
 
     product_list_md = "\n".join(
-        f"{i+1}. **{m}**" for i, m in enumerate(discovered_models)
+        (
+            f"{i+1}. **{m}** — ₹{model_final_prices.get(m):,}"
+            if model_final_prices.get(m)
+            else f"{i+1}. **{m}** — Price fetching from vault…"
+        )
+        for i, m in enumerate(discovered_models)
     )
 
     overview = (
@@ -1625,7 +1783,14 @@ def comparison_agent_node(
         "4. If a spec is missing for a specific model in the context, write exactly: "
         "   'Not available in data' \u2014 do NOT guess or hallucinate.\n"
         "5. Be concise and factual \u2014 no marketing language.\n"
-        f"{recommendation_rule}"
+        f"{recommendation_rule}\n"
+        # BUG-4+8 fix: INR-first priority rule + updated exchange rates
+        "7. CURRENCY — CRITICAL: All prices MUST be expressed in Indian Rupees (INR / ₹). "
+        "PRIORITY: FIRST check the retrieved spec data for an INR/₹ price and use it directly. "
+        "Only if NO INR price is found in the data, look for a foreign-currency price and convert: "
+        "USD × 86 ≈ INR | RM (Malaysian Ringgit) × 19 ≈ INR | SGD × 64 ≈ INR | EUR × 93 ≈ INR. "
+        "Always label converted results as '≈ ₹X,XX,XXX (approx. from <source currency>)'. "
+        "Never display prices only in USD ($), RM, SGD, EUR, or any other currency."
     ))
 
     context_message = HumanMessage(content=(

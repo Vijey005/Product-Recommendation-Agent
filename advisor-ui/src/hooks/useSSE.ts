@@ -7,6 +7,7 @@ interface SSEOptions {
   onToken?: (token: string) => void;
   onStatus?: (status: string) => void;
   onProgress?: (step: string) => void;
+  onVaultReady?: (metadata: any) => void;
   onDone?: (metadata: any) => void;
   onError?: (error: string) => void;
 }
@@ -32,7 +33,7 @@ export function useSSE() {
       const abortCtrl = new AbortController();
       setController(abortCtrl);
 
-      const { onToken, onStatus, onProgress, onDone, onError } = options;
+      const { onToken, onStatus, onProgress, onVaultReady, onDone, onError } = options;
 
       if (useMock) {
         try {
@@ -175,6 +176,8 @@ export function useSSE() {
                   onStatus?.(parsed.message || "");
                 } else if (eventType === "progress") {
                   onProgress?.(parsed.message || "");
+                } else if (eventType === "vault_ready") {
+                  onVaultReady?.(parsed);
                 } else if (eventType === "error") {
                   onError?.(parsed.message || "Unknown stream error");
                 } else {

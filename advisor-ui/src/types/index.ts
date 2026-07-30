@@ -2,8 +2,8 @@ export interface Product {
   id: string;
   name: string;
   brand: string;
-  price: number;
-  currency: string;
+  price: number | null;        // null = price not found in data (never fabricated)
+  currency: string | null;
   imageUrl: string;
   category: string;
   confidenceScore: number; // 0-100

@@ -21,7 +21,7 @@ export default function ProductGrid({
   return (
     <div className="flex flex-col gap-4 h-full">
       {/* Vault Header Info */}
-      <div className="flex flex-col select-none px-1">
+      <div className="flex flex-col px-1">
         <h2 className="font-display font-bold text-lg text-text-primary">
           Your Intelligence Vault
         </h2>

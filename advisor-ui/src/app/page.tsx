@@ -41,7 +41,7 @@ export default function Home() {
   };
 
   return (
-    <main className="h-screen w-full relative flex flex-col justify-center items-center overflow-hidden bg-[#08090C] px-4 select-none">
+    <main className="h-screen w-full relative flex flex-col justify-center items-center overflow-hidden bg-[#08090C] px-4">
       {/* Dynamic 3D Particle Background */}
       <ParticleField />
 
@@ -58,18 +58,18 @@ export default function Home() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.8, delay: 0.4 }}
-          className="flex items-center justify-center gap-4 sm:gap-6 flex-wrap text-text-muted text-[11px] sm:text-xs font-medium font-body select-none mt-2"
+          className="flex items-center justify-center gap-4 sm:gap-6 flex-wrap text-text-muted text-[11px] sm:text-xs font-medium font-body mt-2"
         >
           <div className="flex items-center gap-1.5 bg-bg-surface/50 border border-border-default/40 py-1 px-3 rounded-full backdrop-blur-md">
             <span className="h-1.5 w-1.5 rounded-full bg-accent-primary animate-pulse" />
             <span>🔍 Live Web Search</span>
           </div>
-          <span className="text-border-bright/60 select-none">•</span>
+          <span className="text-border-bright/60">•</span>
           <div className="flex items-center gap-1.5 bg-bg-surface/50 border border-border-default/40 py-1 px-3 rounded-full backdrop-blur-md">
             <span className="h-1.5 w-1.5 rounded-full bg-accent-secondary animate-pulse" />
             <span>🏛️ Private Intel Vault</span>
           </div>
-          <span className="text-border-bright/60 select-none">•</span>
+          <span className="text-border-bright/60">•</span>
           <div className="flex items-center gap-1.5 bg-bg-surface/50 border border-border-default/40 py-1 px-3 rounded-full backdrop-blur-md">
             <span className="h-1.5 w-1.5 rounded-full bg-success/80" />
             <span>🔒 No Data Stored</span>

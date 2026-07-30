@@ -5,6 +5,7 @@ import { Message, SelectionChip } from "@/types";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import SelectionChips from "@/components/intake/SelectionChips";
+import VaultReadyBanner from "@/components/vault/VaultReadyBanner";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sparkles, Terminal, ChevronDown, ChevronRight, Activity } from "lucide-react";
 
@@ -15,6 +16,8 @@ interface ChatWindowProps {
   showQuickChips?: boolean;
   chips?: SelectionChip[];
   onChipSelect?: (value: string) => void;
+  vaultReadyData?: { count: number } | null;
+  onDismissVaultBanner?: () => void;
 }
 
 const QUICK_CHIPS = [
@@ -30,6 +33,8 @@ export default function ChatWindow({
   showQuickChips = false,
   chips = [],
   onChipSelect,
+  vaultReadyData,
+  onDismissVaultBanner,
 }: ChatWindowProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [reasoningOpen, setReasoningOpen] = useState<Record<string, boolean>>({});
@@ -50,7 +55,7 @@ export default function ChatWindow({
       {/* Scrollable Chat Area */}
       <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-2 min-h-0 space-y-4">
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center p-8 select-none gap-3">
+          <div className="h-full flex flex-col items-center justify-center text-center p-8 gap-3">
             <div className="h-10 w-10 rounded-full bg-accent-surface border border-accent-primary/20 flex items-center justify-center text-accent-secondary shadow-md animate-pulse">
               <Sparkles className="h-5 w-5" />
             </div>
@@ -146,7 +151,7 @@ export default function ChatWindow({
 
         {/* Quick Action Suggestion Chips */}
         {showQuickChips && messages.length > 0 && !isStreaming && (
-          <div className="pl-12 pb-4 select-none animate-fadeIn">
+          <div className="pl-12 pb-4 animate-fadeIn">
             <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider block mb-1">
               Suggested Questions:
             </span>
@@ -160,7 +165,7 @@ export default function ChatWindow({
 
         {/* Dynamic Interview Option Chips */}
         {!isStreaming && chips && chips.length > 0 && (
-          <div className="pl-12 pb-4 select-none animate-fadeIn">
+          <div className="pl-12 pb-4 animate-fadeIn">
             <span className="text-[10px] font-bold text-accent-secondary uppercase tracking-wider block mb-1 font-body">
               Select an option:
             </span>
@@ -168,6 +173,17 @@ export default function ChatWindow({
               chips={chips}
               selectedValues={[]}
               onSelect={onChipSelect || (() => {})}
+            />
+          </div>
+        )}
+
+        {/* Vault Ready Banner */}
+        {vaultReadyData && onDismissVaultBanner && (
+          <div className="mt-4 animate-fadeIn">
+            <VaultReadyBanner 
+              count={vaultReadyData.count} 
+              onDismiss={onDismissVaultBanner}
+              onActionClick={(action) => onSendMessage(action)}
             />
           </div>
         )}

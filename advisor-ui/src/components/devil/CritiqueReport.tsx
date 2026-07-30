@@ -49,7 +49,7 @@ export default function CritiqueReport({
               <img
                 src={product.imageUrl}
                 alt={product.name}
-                className="h-full w-full object-cover select-none pointer-events-none"
+                className="h-full w-full object-cover pointer-events-none"
               />
             </div>
             <div className="flex flex-col min-w-0">
@@ -66,7 +66,7 @@ export default function CritiqueReport({
         {/* Scrollable Issues List */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Verdict Card */}
-          <div className="bg-[#2D0808]/20 border border-[#DC2626]/20 rounded-xl p-4 flex flex-col gap-2 relative overflow-hidden select-none">
+          <div className="bg-[#2D0808]/20 border border-[#DC2626]/20 rounded-xl p-4 flex flex-col gap-2 relative overflow-hidden">
             <div className="absolute top-0 right-0 w-24 h-24 bg-[#DC2626]/5 rounded-full blur-xl pointer-events-none" />
             <div className="flex items-center gap-2 text-accent-primary">
               <Flame className="h-5 w-5 animate-pulse" />
@@ -87,7 +87,7 @@ export default function CritiqueReport({
           </div>
 
           {/* List header */}
-          <div className="flex flex-col gap-1 select-none">
+          <div className="flex flex-col gap-1">
             <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider">
               Discovered Flaws
             </span>
@@ -101,7 +101,7 @@ export default function CritiqueReport({
             {report.issues.map((issue, idx) => (
               <div
                 key={idx}
-                className="bg-bg-elevated border border-border-default rounded-xl p-4 flex flex-col gap-3 hover:border-border-bright transition-colors select-none"
+                className="bg-bg-elevated border border-border-default rounded-xl p-4 flex flex-col gap-3 hover:border-border-bright transition-colors"
               >
                 <div className="flex items-start justify-between gap-3">
                   <h4 className="font-display font-bold text-sm text-text-primary leading-tight">
@@ -122,7 +122,7 @@ export default function CritiqueReport({
         </div>
 
         {/* Footer Area */}
-        <div className="p-6 border-t border-border-default bg-bg-elevated/20 flex items-center justify-between gap-4 shrink-0 select-none">
+        <div className="p-6 border-t border-border-default bg-bg-elevated/20 flex items-center justify-between gap-4 shrink-0">
           <Button
             onClick={onSeeAlternatives}
             className="flex-1 bg-transparent hover:bg-bg-subtle text-accent-secondary border border-accent-primary/30 hover:border-accent-primary text-xs sm:text-sm font-semibold h-11 cursor-pointer transition-all rounded-lg"

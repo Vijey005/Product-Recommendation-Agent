@@ -35,7 +35,7 @@ export default function ProductCard({
     <motion.div
       onClick={onSelect}
       whileHover={{ y: -2, boxShadow: "0 10px 30px -10px rgba(0, 0, 0, 0.5)" }}
-      className={`border rounded-xl p-4 flex flex-col gap-4 cursor-pointer select-none transition-all duration-300 relative ${
+      className={`border rounded-xl p-4 flex flex-col gap-4 cursor-pointer transition-all duration-300 relative ${
         isActive
           ? "border-accent-primary bg-accent-surface/30 shadow-[0_0_20px_rgba(91,107,248,0.1)]"
           : "border-border-default bg-bg-elevated hover:border-border-bright"
@@ -53,7 +53,7 @@ export default function ProductCard({
           <img
             src={product.imageUrl || "https://images.unsplash.com/photo-1593642632823-8f785ba67e45?w=100&q=80"}
             alt={product.name}
-            className="h-full w-full object-cover select-none pointer-events-none"
+            className="h-full w-full object-cover pointer-events-none"
             onError={(e) => {
               // Fallback image in case of load failure
               (e.target as HTMLImageElement).src =
@@ -64,7 +64,7 @@ export default function ProductCard({
 
         {/* Title, Brand, Ratings */}
         <div className="flex-1 min-w-0">
-          <div className="flex flex-col select-none">
+          <div className="flex flex-col">
             <span className="text-[10px] font-bold text-accent-secondary uppercase tracking-wide">
               {product.brand || product.name?.split(" ")[0] || "Brand"}
             </span>
@@ -73,7 +73,7 @@ export default function ProductCard({
             </h3>
           </div>
 
-          <div className="flex items-center gap-1.5 mt-1 select-none text-[11px] text-text-secondary">
+          <div className="flex items-center gap-1.5 mt-1 text-[11px] text-text-secondary">
             {/* Stars rendering */}
             <div className="flex text-warning">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -97,14 +97,20 @@ export default function ProductCard({
 
       {/* Middle row: Price and confidence score */}
       <div className="flex items-center justify-between border-t border-border-default/40 pt-3">
-        <div className="flex flex-col select-none">
+        <div className="flex flex-col">
           <span className="text-[9px] font-bold tracking-wider text-text-muted uppercase">
             BEST PRICE
           </span>
-          <span className="font-display font-extrabold text-base sm:text-lg text-text-primary">
-            {product.currency === "USD" ? "$" : "₹"}
-            {(product.price || 75000).toLocaleString()}
-          </span>
+          {product.price != null ? (
+            <span className="font-display font-extrabold text-base sm:text-lg text-text-primary">
+              {product.currency === "USD" ? "$" : "₹"}
+              {product.price.toLocaleString("en-IN")}
+            </span>
+          ) : (
+            <span className="text-xs text-text-muted italic animate-pulse">
+              Fetching price…
+            </span>
+          )}
         </div>
         <ConfidenceScore score={product.confidenceScore || 85} />
       </div>
@@ -118,7 +124,7 @@ export default function ProductCard({
           size="sm"
           variant="outline"
           onClick={handleCritiqueClick}
-          className="border-border-bright hover:border-danger hover:bg-danger/10 text-text-secondary hover:text-danger text-xs font-semibold px-2.5 h-8 gap-1.5 transition-colors duration-200 select-none group"
+          className="border-border-bright hover:border-danger hover:bg-danger/10 text-text-secondary hover:text-danger text-xs font-semibold px-2.5 h-8 gap-1.5 transition-colors duration-200 group"
         >
           <span className="group-hover:animate-bounce">👹</span>
           Critique This

@@ -217,7 +217,7 @@
     @apply border-border/80 transition-colors duration-200 outline-none;
   }
   body {
-    @apply bg-background text-foreground font-body select-none overflow-x-hidden;
+    @apply bg-background text-foreground font-body overflow-x-hidden;
     background-color: var(--background);
     color: var(--foreground);
   }

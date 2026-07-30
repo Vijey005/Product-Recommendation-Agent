@@ -56,16 +56,17 @@ const mapBackendProducts = (rawProducts: any[]): Product[] => {
     const name = p.name || `Product ${idx + 1}`;
     const id = p.id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || `prod-${idx}`;
     const brand = p.brand || name.split(" ")[0] || "Brand";
-    const price = typeof p.price === "number" ? p.price : 75000 + (idx * 5000);
+    // Use real price from backend; null if not found — NEVER fabricate a number
+    const price: number | null = typeof p.price === "number" ? p.price : null;
     
     return {
       id,
       name,
       brand,
       price,
-      currency: p.currency || "INR",
+      currency: price !== null ? (p.currency || "INR") : null,
       imageUrl: p.imageUrl || "",
-      category: p.category || "Laptop",
+      category: p.category || "Smartphone",
       confidenceScore: p.confidenceScore || 90,
       specs: p.specs || {},
       prosHighlights: p.prosHighlights || ["High Performance", "Modern Design"],
@@ -119,6 +120,7 @@ export default function SessionPage() {
   const [isSearching, setIsSearching] = useState(false); // True while backend is vaulting products
   const [searchSteps, setSearchSteps] = useState<VaultStep[]>([]);  // Live steps from backend
   const [vaultDone, setVaultDone] = useState(false);                 // Backend finished search
+  const [vaultReadyData, setVaultReadyData] = useState<{ count: number } | null>(null);
   const isSearchingRef = useRef(false);
 
   const setIsSearchingBoth = (val: boolean) => {
@@ -280,6 +282,9 @@ export default function SessionPage() {
           return [...updated, { text: step, isDone: false }];
         });
       },
+      onVaultReady: (metadata) => {
+        setVaultReadyData({ count: metadata.count || 0 });
+      },
       onDone: (metadata) => {
         toast.dismiss("sse-status");
         
@@ -430,7 +435,7 @@ export default function SessionPage() {
   const currentChips = showChips ? (INTERVIEW_CHIPS[interviewStep] || []) : [];
 
   return (
-    <div className="h-screen w-full flex overflow-hidden bg-bg-base relative select-none">
+    <div className="h-screen w-full flex overflow-hidden bg-bg-base relative">
       {/* 3D background behind everything */}
       <ParticleField isDevilMode={isDevilMode} />
 
@@ -456,6 +461,8 @@ export default function SessionPage() {
                   onSendMessage={handleSendMessage}
                   chips={currentChips}
                   onChipSelect={handleChipSelect}
+                  vaultReadyData={vaultReadyData}
+                  onDismissVaultBanner={() => setVaultReadyData(null)}
                 />
               </div>
             </div>
@@ -512,6 +519,8 @@ export default function SessionPage() {
                     isStreaming={sseStreaming}
                     onSendMessage={handleSendMessage}
                     showQuickChips={true}
+                    vaultReadyData={vaultReadyData}
+                    onDismissVaultBanner={() => setVaultReadyData(null)}
                   />
                 </div>
               </div>

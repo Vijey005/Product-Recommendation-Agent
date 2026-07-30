@@ -184,6 +184,14 @@ def _sse_progress(message: str) -> str:
     return _sse_event({"type": "progress", "message": message}, event="progress")
 
 
+def _sse_vault_ready(products: List[Dict[str, Any]], count: int) -> str:
+    """
+    Vault ready frame — signals to the frontend that the search pipeline
+    is complete and the user can now ask questions about the retrieved products.
+    """
+    return _sse_event({"type": "vault_ready", "products": products, "count": count}, event="vault_ready")
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # STREAMING GENERATORS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -288,6 +296,11 @@ async def _stream_interview_phase(
 
                 elif kind == "on_chain_end" and name == "search_and_vault_node":
                     yield _sse_status("✅ Product vault ready!")
+                    
+                    # Extract the retrieved products from the node's output if possible
+                    output_data = event.get("data", {}).get("output", {})
+                    retrieved_products = output_data.get("retrieved_products", []) if isinstance(output_data, dict) else []
+                    yield _sse_vault_ready(products=retrieved_products, count=len(retrieved_products))
 
                 # ── Capture final graph output ────────────────────────────────────
                 elif kind == "on_chain_end" and name == "LangGraph":
@@ -463,7 +476,14 @@ async def _stream_rag_phase(
             "4. If a spec is missing for a specific model in the context, write exactly: "
             "   'Not available in data' — do NOT guess or hallucinate.\n"
             "5. Be concise and factual — no marketing language.\n"
-            f"{recommendation_rule}"
+            f"{recommendation_rule}\n"
+            # BUG-4+8 fix: INR-first priority rule + updated exchange rates (mirrors nodes.py)
+            "7. CURRENCY — CRITICAL: All prices MUST be expressed in Indian Rupees (INR / ₹). "
+            "PRIORITY: FIRST check the retrieved spec data for an INR/₹ price and use it directly. "
+            "Only if NO INR price is found in the data, look for a foreign-currency price and convert: "
+            "USD × 86 ≈ INR | RM (Malaysian Ringgit) × 19 ≈ INR | SGD × 64 ≈ INR | EUR × 93 ≈ INR. "
+            "Always label converted results as '≈ ₹X,XX,XXX (approx. from <source currency>)'. "
+            "Never display prices only in USD ($), RM, SGD, EUR, or any other currency."
         )
 
         return context_block, system_prompt_text, has_comparison_intent, has_recommendation_intent
