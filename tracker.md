@@ -304,3 +304,24 @@ Improve the user experience during long-running crawler execution by adding a li
 ### 🧠 Technical Decisions & Notes
 - **Event Loop Thread Bridging:** Used `loop.call_soon_threadsafe(queue.put_nowait, msg)` to bridge synchronous thread-pool workers (LangGraph node) back into FastAPI's asynchronous event loop.
 - **Concurrent Task Merging:** Handled concurrent tasks using `asyncio.Queue` so that the event generator yields progress updates instantly as they occur without stalling the LangGraph execution stream.
+
+---
+
+## Phase 3.2: Pricing Accuracy & Null-Safety Pipeline (Session 2)
+**Status:** Completed  
+**Date:** July 30, 2026  
+
+### 🎯 Goal
+Guarantee that product recommendations respect user budget ceilings by validating Indian retail prices in real-time, and ensure UI price renderings accurately reflect retrieved data (or properly indicate missing pricing) rather than displaying fabricated fallbacks.
+
+### 📝 Files Changed
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Regex Price Extraction:** Added `_extract_price_inr()` helper to reliably parse INR/₹ prices from scraped raw text and markdown tables.
+  - **Stage 1b - Price Pre-Filter:** Introduced a parallel Tavily lookup for each curated candidate model *before* spec harvest. Automatically drops models whose confirmed price exceeds the budget ceiling by >5%, solving the LLM "hallucinated budget compliance" issue.
+  - **Stage 3 - Price Finalisation:** Added a post-harvest check against the synthesised `spec_card` chunks in ChromaDB. Injects the most accurate `price` (int) and `currency` ("INR") into the `canonical_products` state for frontend consumption.
+- [advisor-ui/src/types/index.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/types/index.ts):
+  - Made `price` and `currency` fields nullable (`number | null`) to accurately model state.
+- [advisor-ui/src/app/(advisor)/chat/[sessionId]/page.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/app/(advisor)/chat/[sessionId]/page.tsx):
+  - **Removed Fabricated Fallback:** Replaced the hardcoded `75000 + (idx * 5000)` fallback in `mapBackendProducts` with exact backend values.
+- [advisor-ui/src/components/vault/ProductCard.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductCard.tsx):
+  - **Null-Aware Rendering:** Implemented an animated `"Fetching price…"` placeholder when pricing is missing, while safely rendering known prices in Indian number format (`en-IN`).

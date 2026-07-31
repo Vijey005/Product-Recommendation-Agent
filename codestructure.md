@@ -91,6 +91,7 @@ uvicorn api.server:app --reload --port 8000
   - [question_generator_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L403): Identifies missing fields, drafts one targeted question with 3–4 numbered options. Budget in INR (`₹`).
   - [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L977): Four-layer spec harvesting:
     - *Stage 1 (Discovery):* Time-stamped query (`datetime.now().strftime('%B %Y')`), curator LLM extracts 5–6 canonical model names. Sends real-time progress callbacks back to the API.
+    - *Stage 1b (Price Pre-Filter):* Parallel Tavily lookup to verify Indian retail prices and drop over-budget models via the `_extract_price_inr()` helper.
     - *Stage 2 — Layer 1:* LLM generates 4–5 query templates per spec cluster.
     - *Stage 2 — Layer 2:* ThreadPoolExecutor runs Tavily queries concurrently; URLs deduplicated.
     - *Stage 2 — Layer 3 (Adaptive Ingestion):* Tavily extract + BeautifulSoup fallback. `chunk_size=400` for spec-dense tables, `chunk_size=1000` for narrative. Spec cards synthesised **sequentially** with `time.sleep(3)` between each model call to clear Gemini Free Tier 429 burst limits. All writes thread-guarded by `_vault_write_lock`. Emits status updates for each model as it completes ingestion and synthesis.
@@ -144,10 +145,11 @@ uvicorn api.server:app --reload --port 8000
 ### 9. [advisor-ui/](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui)
 - **Role:** Next.js 16 (Turbopack) React user interface leveraging Tailwind CSS and Framer Motion.
 - **Key Components:**
+  - [types/index.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/types/index.ts): Defines core structures like `Product` with nullable pricing (`price`, `currency`) for accurate frontend mapping.
   - [useSSE.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/hooks/useSSE.ts): Custom SSE hooks subscribing to token, status, done, error, and progress streams.
   - [advisorStore.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/store/advisorStore.ts): Zustand global store managing devil mode toggle, chat history persistence, and product list states.
   - [VaultBuildingAnimation.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/search/VaultBuildingAnimation.tsx): Interactive overlay UI mapping live progress events to dynamic timeline steps.
-  - [ProductCard.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductCard.tsx): Grid card element rendering specifications, ratings, prices with safe fallbacks.
+  - [ProductCard.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductCard.tsx): Grid card element rendering specifications, ratings, and null-aware prices with safe fallbacks.
   - [page.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/app/(advisor)/chat/%5BsessionId%5D/page.tsx): Main split layout orchestrator connecting messaging inputs and UI state steps.
 
 ---
