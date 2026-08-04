@@ -44,6 +44,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress urllib3 "Connection pool is full" warnings — these are non-fatal:
+# they occur when many spec-harvest threads open concurrent Tavily connections
+# and the default pool of 10 overflows. Requests still succeed; the warning
+# is just noise. We silence it at WARNING level and keep only ERROR and above.
+logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Guard: ensure required API keys are present before the server accepts traffic
 # ─────────────────────────────────────────────────────────────────────────────

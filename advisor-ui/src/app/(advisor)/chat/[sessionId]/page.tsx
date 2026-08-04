@@ -13,12 +13,11 @@ import SaveSessionDialog from "@/components/layout/SaveSessionDialog";
 import SelectionChips from "@/components/intake/SelectionChips";
 import ChatWindow from "@/components/chat/ChatWindow";
 import ProductGrid from "@/components/vault/ProductGrid";
-import CritiqueReport from "@/components/devil/CritiqueReport";
 
 import { useAdvisorStore } from "@/store/advisorStore";
 import { useSSE } from "@/hooks/useSSE";
-import { SelectionChip, Message, Product, CritiqueReport as ICritiqueReport } from "@/types";
-import { MOCK_CRITIQUES, MOCK_PRODUCTS } from "@/lib/mockData";
+import { SelectionChip, Message, Product } from "@/types";
+import { MOCK_PRODUCTS } from "@/lib/mockData";
 
 // Dynamically load the particle field and vault loader animation
 const ParticleField = dynamic(() => import("@/components/three/ParticleField"), { ssr: false });
@@ -67,13 +66,13 @@ const mapBackendProducts = (rawProducts: any[]): Product[] => {
       currency: price !== null ? (p.currency || "INR") : null,
       imageUrl: p.imageUrl || "",
       category: p.category || "Smartphone",
-      confidenceScore: p.confidenceScore || 90,
+      confidenceScore: typeof p.confidenceScore === "number" ? p.confidenceScore : 0,
       specs: p.specs || {},
       prosHighlights: p.prosHighlights || ["High Performance", "Modern Design"],
       consHighlights: p.consHighlights || ["Average Battery Life"],
       dataSource: p.dataSource || "live_scrape",
-      reviewCount: p.reviewCount || 85,
-      rating: p.rating || 4.5,
+      reviewCount: typeof p.reviewCount === "number" ? p.reviewCount : 0,
+      rating: typeof p.rating === "number" ? p.rating : 0,
       affiliateUrl: p.affiliateUrl || "#",
     };
   });
@@ -111,9 +110,6 @@ export default function SessionPage() {
 
   // Local State
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
-  const [critiqueOpen, setCritiqueOpen] = useState(false);
-  const [selectedCritique, setSelectedCritique] = useState<ICritiqueReport | null>(null);
-  const [critiquedProduct, setCritiquedProduct] = useState<Product | null>(null);
   const [interviewStep, setInterviewStep] = useState(0);
   const [preDevilTheme, setPreDevilTheme] = useState("dark");
   const [isRestoring, setIsRestoring] = useState(true);
@@ -284,6 +280,9 @@ export default function SessionPage() {
       },
       onVaultReady: (metadata) => {
         setVaultReadyData({ count: metadata.count || 0 });
+        if (metadata.products && metadata.products.length > 0) {
+          setProducts(mapBackendProducts(metadata.products));
+        }
       },
       onDone: (metadata) => {
         toast.dismiss("sse-status");
@@ -338,32 +337,17 @@ export default function SessionPage() {
     triggerInterviewStream(value);
   };
 
-  // Triggers Devil's Advocate Mode
-  const handleCritiqueProduct = async (productName: string) => {
-    // 1. Find product object
-    const prod = products.find((p) => p.name === productName) || products[0];
-    setCritiquedProduct(prod);
-
-    // 2. Set theme red and set store states
+  // Triggers Common Devil's Advocate Mode across all products
+  const handleCritiqueAll = async () => {
     setPreDevilTheme(theme || "dark");
     setDevilMode(true);
     setTheme("devil-mode");
 
-    // 3. Prepare mock report or query backend /api/v1/advocate
-    // Find matching mock critique
-    const matchedCritique = Object.values(MOCK_CRITIQUES).find(
-      (c) => c.productId === prod.id || productName.toLowerCase().includes(c.productId)
-    ) || MOCK_CRITIQUES["prod-2"];
-
-    setSelectedCritique(matchedCritique);
-    setCritiqueOpen(true);
-
-    // Trigger SSE warning critique narration in chat window as well
     const assistantMsgId = "devil-advocate-" + Date.now();
     appendMessage({
       id: assistantMsgId,
       role: "assistant",
-      content: `👹 **Devil's Advocate active for ${productName}...**\n\n`,
+      content: `👹 **Devil's Advocate mode active for all products in your vault...**\n\n`,
       timestamp: new Date(),
       isStreaming: true,
     });
@@ -372,14 +356,14 @@ export default function SessionPage() {
 
     await startStreaming("/api/v1/advocate", {
       session_id: sessionId,
-      product_name: productName,
+      product_name: "all",
     }, {
       onToken: (token) => {
         fullText += token;
         updateLastMessage(fullText);
       },
       onStatus: (statusMessage) => {
-        toast.loading(statusMessage, { id: "advocate-status", duration: 1500 });
+        toast.loading(statusMessage, { id: "advocate-status", duration: 2000 });
       },
       onDone: (metadata) => {
         toast.dismiss("advocate-status");
@@ -388,24 +372,9 @@ export default function SessionPage() {
       onError: (err) => {
         toast.dismiss("advocate-status");
         toast.error("Critique Error: " + err);
-        updateLastMessage("👹 **Devil's Advocate:** Failed to harvest live forum critiques. Cached values are visible in the side panel.");
+        updateLastMessage("👹 **Devil's Advocate:** Failed to harvest live forum critiques. Please try again in a moment.");
       }
     });
-  };
-
-  const handleBuyAnyway = () => {
-    toast.success(`Purchase confirmed! Directing you to ${critiquedProduct?.brand} affiliate link...`);
-    window.open(critiquedProduct?.affiliateUrl, "_blank");
-    setCritiqueOpen(false);
-    setDevilMode(false);
-    setTheme(preDevilTheme);
-  };
-
-  const handleSeeAlternatives = () => {
-    setCritiqueOpen(false);
-    setDevilMode(false);
-    setTheme(preDevilTheme);
-    triggerInterviewStream(`Compare alternatives to the ${critiquedProduct?.name}`);
   };
 
   // Returns current interview chip set only if it matches the context of the AI's question
@@ -499,7 +468,7 @@ export default function SessionPage() {
                   products={products}
                   activeProductId={activeProductId}
                   onSelectProduct={(id) => setActiveProduct(id)}
-                  onCritiqueProduct={handleCritiqueProduct}
+                  onCritiqueAll={handleCritiqueAll}
                 />
               </div>
 
@@ -534,20 +503,6 @@ export default function SessionPage() {
         isOpen={saveDialogOpen}
         onClose={() => setSaveDialogOpen(false)}
         sessionId={sessionId}
-      />
-
-      {/* Side Sheet overlay for Devil's Advocate critiques */}
-      <CritiqueReport
-        isOpen={critiqueOpen}
-        onClose={() => {
-          setCritiqueOpen(false);
-          setDevilMode(false);
-          setTheme(preDevilTheme);
-        }}
-        report={selectedCritique}
-        product={critiquedProduct}
-        onSeeAlternatives={handleSeeAlternatives}
-        onBuyAnyway={handleBuyAnyway}
       />
     </div>
   );

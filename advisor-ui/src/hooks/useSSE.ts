@@ -52,12 +52,25 @@ export function useSSE() {
               (p) => p.productId === body.product_name || body.product_name.toLowerCase().includes(p.productId)
             ) || MOCK_CRITIQUES["prod-2"];
 
-            const critiqueText = `👹 **Devil's Advocate Verdict:** ${prod.overallVerdict}\n\nHere are the critical community issues discovered:\n\n${prod.issues
-              .map(
-                (issue) =>
-                  `- 🔴 **${issue.title}** (Severity: ${issue.severityScore}/5) — ${issue.description} [Sourced from ${issue.reportCount} reports]\n`
-              )
-              .join("")}\nWould you like to see recommended alternatives?`;
+            const critiqueText = `### 👹 Devil's Advocate Analysis: ${body.product_name}
+
+${prod.overallVerdict}
+
+#### 🚨 Verified Community Defects
+
+${prod.issues
+  .map(
+    (issue) =>
+      `- **${issue.title}**: ${issue.description}\n  🔴 [Sourced from ${issue.reportCount} independent community reports - Severity Weight: ${issue.severityScore}/5] (reddit.com/r/Laptops)\n`
+  )
+  .join("\n")}
+
+### 📊 Community Risk Summary Matrix
+| Product | Top Primary Defect | Highest Severity | Risk Level |
+| :--- | :--- | :--- | :--- |
+| ${body.product_name} | ${prod.issues[0]?.title || "Hardware Defect"} | 🔴 ${prod.issues[0]?.severityScore || 5}/5 | High |
+
+*Note: Always inspect thermal performance and request extended warranty coverage before purchasing.*`;
 
             for await (const chunk of streamMockResponse(critiqueText)) {
               if (abortCtrl.signal.aborted) break;

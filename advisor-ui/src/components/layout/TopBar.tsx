@@ -25,10 +25,31 @@ export default function TopBar({ onSaveClick }: TopBarProps) {
     }
   };
 
+  // Synchronize isDevilMode state with next-themes and DOM root class
+  React.useEffect(() => {
+    if (!isDevilMode) {
+      if (theme === "devil-mode") {
+        setTheme("dark");
+      }
+      if (typeof document !== "undefined") {
+        document.documentElement.classList.remove("devil-mode");
+      }
+    } else {
+      if (theme !== "devil-mode") {
+        setTheme("devil-mode");
+      }
+      if (typeof document !== "undefined") {
+        document.documentElement.classList.add("devil-mode");
+      }
+    }
+  }, [isDevilMode, theme, setTheme]);
+
   const handleExitDevilMode = () => {
     setDevilMode(false);
-    if (theme === "devil-mode") {
-      setTheme("dark");
+    setTheme("dark");
+    if (typeof document !== "undefined") {
+      document.documentElement.classList.remove("devil-mode");
+      document.documentElement.classList.add("dark");
     }
     toast.info("Exited Devil's Advocate Mode");
   };

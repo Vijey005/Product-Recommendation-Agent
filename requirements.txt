@@ -42,6 +42,8 @@ langchain-chroma>=0.1.0
 # ── Phase 2: Web Scraping ────────────────────────
 beautifulsoup4>=4.12.0
 requests>=2.31.0
+# Playwright — headless browser for Flipkart product image/rating scraping
+playwright>=1.40.0
 
 # Structured output & validation
 pydantic>=2.0.0

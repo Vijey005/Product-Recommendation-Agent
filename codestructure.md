@@ -15,13 +15,15 @@ Here is the complete layout of the workspace. Click any file link to open it:
   - [agent/models.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/models.py) — `ProductConstraints` Pydantic model for structured user requirement parsing.
   - [agent/graph.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/graph.py) — LangGraph `StateGraph` topology and conditional routing.
   - [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py) — All graph nodes, spec harvesting engine, RAG answering nodes, and forum triager.
+  - [agent/scraper.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/scraper.py) — Flipkart & Amazon India live product scraper engine (Playwright Chromium subprocess).
 - [api/](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api) — **Phase 3.0** production FastAPI backend package.
   - [api/__init__.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/__init__.py) — Package marker.
   - [api/server.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/server.py) — FastAPI app factory: CORS, slowapi rate-limiting middleware, lifespan startup hook, global exception handler.
   - [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py) — All HTTP endpoints, Pydantic I/O schemas, SSE frame helpers, and async streaming generators.
   - [api/dependencies.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/dependencies.py) — Module-level singletons: embedding warm-up, MemorySaver graph, SessionStore, and FastAPI `Depends` factories.
 - [advisor-ui/](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui) — Next.js 16 (Turbopack) web interface using Tailwind CSS and Framer Motion.
-- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt) — All dependencies: LangChain, LangGraph, Tavily, ChromaDB, Sentence Transformers, FastAPI, uvicorn, sse-starlette, slowapi.
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt) — All dependencies: LangChain, LangGraph, Tavily, ChromaDB, Sentence Transformers, FastAPI, uvicorn, sse-starlette, slowapi, Playwright.
+- [scrape.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/scrape.py) — Standalone Flipkart live product scraping test script.
 - [fix_surrogates.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/fix_surrogates.py) — UTF-8 surrogate pair fixer utility for agent output logs (retained as utility).
 - [.env](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env) — Active environment configuration (API keys — gitignored).
 - [.env.example](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/.env.example) — Template for required environment variables.
@@ -89,16 +91,16 @@ uvicorn api.server:app --reload --port 8000
   - [register_progress_cb / unregister_progress_cb](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L65): Register and clean up event hooks for worker threads to push progress updates back to the event loop.
   - [analyzer_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L356): Structured LLM extraction into `ProductConstraints`. Strict anti-inference prompting prevents soft assumptions.
   - [question_generator_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L403): Identifies missing fields, drafts one targeted question with 3–4 numbered options. Budget in INR (`₹`).
-  - [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L977): Four-layer spec harvesting:
+  - [search_and_vault_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L977): Four-layer spec harvesting engine:
     - *Stage 1 (Discovery):* Time-stamped query (`datetime.now().strftime('%B %Y')`), curator LLM extracts 5–6 canonical model names. Sends real-time progress callbacks back to the API.
-    - *Stage 1b (Price Pre-Filter):* Parallel Tavily lookup to verify Indian retail prices and drop over-budget models via the `_extract_price_inr()` helper.
+    - *Stage 1b (Price Pre-Filter & Background Scraper):* Parallel Tavily lookup to verify Indian retail prices and drop over-budget models. Simultaneously launches `scrape_products_sequential()` from `agent/scraper.py` in a background thread to harvest live prices, high-res images, star ratings, and review counts from Flipkart/Amazon India via Playwright.
     - *Stage 2 — Layer 1:* LLM generates 4–5 query templates per spec cluster.
     - *Stage 2 — Layer 2:* ThreadPoolExecutor runs Tavily queries concurrently; URLs deduplicated.
     - *Stage 2 — Layer 3 (Adaptive Ingestion):* Tavily extract + BeautifulSoup fallback. `chunk_size=400` for spec-dense tables, `chunk_size=1000` for narrative. Spec cards synthesised **sequentially** with `time.sleep(3)` between each model call to clear Gemini Free Tier 429 burst limits. All writes thread-guarded by `_vault_write_lock`. Emits status updates for each model as it completes ingestion and synthesis.
-    - *Stage 2 — Layer 4:* Coverage check — re-crawls any model with <20 vaulted chunks.
+    - *Stage 2 — Layer 4:* Coverage check — re-crawls any model with <20 vaulted chunks, calculates dynamic `confidenceScore` (50–100), joins the background scraper thread, and constructs `canonical_products`.
   - [comparison_agent_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1419): Hybrid spec-card-first RAG. Metadata filter pulls spec cards (no embedding computation); semantic `similarity_search` on the latest raw `user_query` only (Phase 2.98 isolation fix). History truncated to last 4 turns × 2,000 chars. LLM `request_timeout=20.0`.
   - [_harvest_and_triage_forum_data](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1636): One Tavily search per product (`search_depth="advanced"`, `max_results=6`), URL-stamped corpus, single structured LLM triage pass → ChromaDB `chunk_type="forum_critique"`. In the API this runs inside `asyncio.to_thread()`.
-  - [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1861): Queries `forum_critique` chunks, sorts by `severity_weight`, formats `🔴 [Sourced from N independent community reports - Severity Weight: X/5]` with source domain URLs.
+  - [devils_advocate_consensus_node](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py#L1861): Queries `forum_critique` chunks, sorts by `severity_weight`, and formats a 5-part structured analysis: Opening Warning, Product Breakdown, bolded defect bullet points with `🔴 [Sourced from N independent community reports - Severity Weight: X/5] (domain1, domain2)` citations, Executive Risk Matrix table, and Closing Actionable Advice.
 
 ---
 

@@ -28,10 +28,13 @@ import os
 os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
+import logging
 import random
 import re
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -259,7 +262,7 @@ def _get_llm_base() -> ChatGoogleGenerativeAI:
             thinking_budget=0,   # Disable dynamic thinking — prevents multi-minute hangs
                                   # on large context comparisons (Gemini 2.5 Flash default
                                   # burns thinking tokens proportional to context size).
-            request_timeout=20.0, # Phase 2.98: hard socket drop at 20 s — prevents terminal hangs
+            request_timeout=90.0, # Increased to 90s to allow full token streaming for detailed multi-product comparison tables
         )
     return _llm_base
 
@@ -325,6 +328,24 @@ def _get_tavily() -> TavilyClient:
                 "Get a free key at https://app.tavily.com/home and add it to .env"
             )
         _tavily = TavilyClient(api_key=api_key)
+
+        # ── Increase urllib3 connection pool size ─────────────────────────────
+        # Multiple spec-harvest threads make concurrent Tavily calls; the default
+        # pool of 10 overflows and generates noisy "pool full" warnings.
+        # We mount a larger adapter on the client's internal requests.Session.
+        try:
+            import requests
+            from requests.adapters import HTTPAdapter
+            _adapter = HTTPAdapter(pool_connections=30, pool_maxsize=30)
+            if hasattr(_tavily, "_session") and _tavily._session is not None:
+                _tavily._session.mount("https://", _adapter)
+                _tavily._session.mount("http://",  _adapter)
+            else:
+                # Fallback: patch the global requests default session adapter
+                requests.adapters.DEFAULT_RETRIES = 3
+        except Exception:
+            pass  # Non-critical — scraping still works without larger pool
+
     return _tavily
 
 
@@ -1250,61 +1271,44 @@ def search_and_vault_node(
         print(f"       {i}. {m}")
     print()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 1b — PRICE PRE-FILTER: parallel Tavily price lookup per candidate
-    # Purpose: Drop models whose confirmed Indian price exceeds the budget ceiling
-    #          and build a price dict used later to populate product cards.
-    # ══════════════════════════════════════════════════════════════════════════
-    discovered_prices: Dict[str, int | None] = {}   # model → INR price (or None)
-
-    def _lookup_price(model_name: str) -> tuple[str, int | None]:
-        """Run a targeted Tavily search for this model's Indian retail price."""
-        price_q = f"{model_name} price India INR buy {current_year}"
-        try:
-            resp = tavily.search(query=price_q, max_results=3, search_depth="advanced")
-            combined = " ".join(
-                f"{r.get('title', '')} {r.get('content', '')}"
-                for r in resp.get("results", [])
-            )
-            return model_name, _extract_price_inr(combined)
-        except Exception:
-            return model_name, None
-
-    emit("💰 Verifying Indian market prices for each candidate...")
-    with ThreadPoolExecutor(max_workers=min(len(discovered_models), 6)) as price_ex:
-        price_futures = {price_ex.submit(_lookup_price, m): m for m in discovered_models}
-        for pf in as_completed(price_futures):
-            try:
-                m_name, m_price = pf.result()
-                discovered_prices[m_name] = m_price
-                price_label = f"₹{m_price:,}" if m_price else "price unknown"
-                print(f"  💰  {m_name:<45} {price_label}")
-            except Exception:
-                pass
-
-    # Apply budget filter: drop any model whose confirmed price EXCEEDS ceiling
-    if budget_ceil is not None:
-        pre_filter_count = len(discovered_models)
-        discovered_models = [
-            m for m in discovered_models
-            if (
-                # Keep if price unknown (can't confirm over-budget — include with caveat)
-                discovered_prices.get(m) is None
-                # Keep if confirmed price is within the ceiling (5% grace margin)
-                or discovered_prices[m] <= budget_ceil * 1.05
-            )
-        ]
-        dropped = pre_filter_count - len(discovered_models)
-        if dropped:
-            print(f"\n  🚫  Budget filter removed {dropped} over-budget model(s) (ceiling {budget_ceil_str}).")
-            emit(f"🚫 Filtered out {dropped} product(s) that exceed your budget ceiling — keeping only in-budget options")
-
-    print(f"\n  ✅  {len(discovered_models)} products passing budget gate:")
+    # ── Confirmed candidates ready ────────────────────────────────────────────────
+    print(f"\n  ✅  {len(discovered_models)} qualifying products confirmed by LLM curator:")
     for i, m in enumerate(discovered_models, 1):
-        price_label = f"₹{discovered_prices.get(m):,}" if discovered_prices.get(m) else "price TBC"
-        print(f"       {i}. {m}  [{price_label}]")
+        print(f"       {i}. {m}")
     print()
     emit(f"✅ {len(discovered_models)} qualifying products — starting deep spec harvest")
+
+    # ── PARALLEL: kick off Flipkart scraper NOW in a background thread ───────────
+    # The Tavily spec harvest takes ~2-4 minutes; the Flipkart scraper takes
+    # ~30-90 seconds. By starting it here they run in parallel, so scraper
+    # data is ready before (or right as) the harvest finishes. No extra wait.
+    _scraper_data: dict = {}   # product_name -> scraped dict
+
+    def _run_scraper_bg(names: list) -> None:
+        try:
+            from agent.scraper import scrape_products_sequential
+            temp = [{"name": n} for n in names]
+            scrape_products_sequential(temp)
+            for p in temp:
+                _scraper_data[p["name"]] = {
+                    "price":       p.get("price"),
+                    "currency":    p.get("currency"),
+                    "imageUrl":    p.get("imageUrl"),
+                    "rating":      p.get("rating"),
+                    "reviewCount": p.get("reviewCount"),
+                }
+        except Exception as exc:
+            logger.warning("[scraper-bg] Background scraper failed: %s", exc)
+
+    _scraper_thread = threading.Thread(
+        target=_run_scraper_bg,
+        args=(list(discovered_models),),
+        daemon=True,
+        name="flipkart-scraper",
+    )
+    _scraper_thread.start()
+    emit("🛒 Flipkart scraper running in parallel — fetching prices, images & ratings…")
+    logger.info("[scraper-bg] Started background scraper for %d product(s)", len(discovered_models))
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2 — PER-PRODUCT SPEC HARVESTER (FOUR-LAYER SYSTEM)
@@ -1501,7 +1505,6 @@ def search_and_vault_node(
                     text = _fetch_page_text(url, tavily)
                     if text and not text.startswith("[Content fetch failed"):
                         supp_texts.append(text[:3000])
-                        # BUG-6 fix: adaptive chunking — match content type to chunk strategy
                         supp_content_type = _detect_content_type(text)
                         if supp_content_type == "spec_dense":
                             splitter = RecursiveCharacterTextSplitter(
@@ -1532,55 +1535,74 @@ def search_and_vault_node(
                         ids = [f"{product_id}_supp_{ci}" for ci in range(len(chunks))]
                         with _vault_write_lock:
                             vs.add_texts(texts=chunks, metadatas=metadatas, ids=ids)
-                        print(f"       \u2705  Supplementary: {len(chunks)} chunks ({supp_content_type}) added for {model}")
             except Exception as exc:
                 print(f"       \u26a0\ufe0f  Supplementary search failed for {model}: {exc}")
 
     print()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 3 \u2014 STATE UPDATE & UI SUMMARY
-    # ══════════════════════════════════════════════════════════════════════════
-    # ── Price finalisation: prefer spec card price, fall back to pre-filter lookup ──
-    # The spec card was just synthesised — query ChromaDB for each model's spec_card
-    # chunk and try to parse a price row. This gives the most accurate, source-backed
-    # INR value. If the spec card has no price, use the Tavily pre-filter lookup.
+    # ── Confidence score computation ──────────────────────────────────────────
+    # Score is derived from vault coverage quality — NOT hardcoded.
+    # Formula:
+    #   Base 50 pts
+    #   +20 if chunk_count >= MIN_CHUNKS_PER_PRODUCT (well-covered)
+    #   +15 if spec card was synthesised
+    #   +15 if chunk_count >= 40 (very rich coverage)
+    # Clamped to [50, 100].
     vs_final = _get_vectorstore()
-    model_final_prices: Dict[str, int | None] = {}
+    model_confidence: Dict[str, int] = {}
     for m in discovered_models:
         try:
-            sc_result = vs_final.get(
-                where={"$and": [
-                    {"product_name": {"$eq": m}},
-                    {"chunk_type":   {"$eq": "spec_card"}},
-                ]}
+            chunks_result = vs_final.get(where={"product_name": {"$eq": m}})
+            chunk_count = len(chunks_result.get("ids", []))
+            has_spec_card = any(
+                meta.get("chunk_type") == "spec_card"
+                for meta in chunks_result.get("metadatas", [])
             )
-            sc_price = None
-            if sc_result and sc_result.get("documents"):
-                spec_text = sc_result["documents"][0]
-                # Also scan harvested page text for any raw price mentions
-                raw_corpus = harvest_results.get(m, {}).get("all_page_texts", "")
-                sc_price = _extract_price_inr(spec_text) or _extract_price_inr(raw_corpus)
-            model_final_prices[m] = sc_price or discovered_prices.get(m)
+            score = 50
+            if chunk_count >= MIN_CHUNKS_PER_PRODUCT:
+                score += 20
+            if has_spec_card:
+                score += 15
+            if chunk_count >= 40:
+                score += 15
+            model_confidence[m] = min(100, score)
         except Exception:
-            model_final_prices[m] = discovered_prices.get(m)
+            model_confidence[m] = 60  # safe fallback
 
-    canonical_products: List[Dict[str, Any]] = [
-        {
-            "name":     m,
-            "url":      "",
-            "snippet":  "",
-            "price":    model_final_prices.get(m),       # real INR int or None
-            "currency": "INR" if model_final_prices.get(m) else None,
-        }
-        for m in discovered_models
-    ]
+    # ── Join background Flipkart scraper thread ──────────────────────────────
+    # Harvest typically takes longer than the scraper, so this join is usually
+    # instant (scraper already finished). Safety timeout: 90 s.
+    if _scraper_thread.is_alive():
+        emit("⏳ Waiting for Flipkart scraper to finish…")
+        logger.info("[scraper-bg] Harvest finished first — waiting up to 90s for scraper")
+        _scraper_thread.join(timeout=90)
+
+    if _scraper_data:
+        logger.info("[scraper-bg] ✅ Scraper data ready for %d product(s)", len(_scraper_data))
+    else:
+        logger.warning("[scraper-bg] No scraper data — products will show without live price/image")
+
+    # ── Build canonical product list, merging scraper data inline ──────────────
+    canonical_products: List[Dict[str, Any]] = []
+    for m in discovered_models:
+        scraped = _scraper_data.get(m, {})
+        canonical_products.append({
+            "name":            m,
+            "url":             "",
+            "snippet":         "",
+            "price":           scraped.get("price"),          # INR int from Flipkart
+            "currency":        scraped.get("currency"),       # "INR" or None
+            "imageUrl":        scraped.get("imageUrl"),       # Flipkart CDN URL
+            "rating":          scraped.get("rating"),         # float from Flipkart
+            "reviewCount":     scraped.get("reviewCount"),    # int from Flipkart
+            "confidenceScore": model_confidence.get(m, 60),
+        })
 
     product_list_md = "\n".join(
         (
-            f"{i+1}. **{m}** — ₹{model_final_prices.get(m):,}"
-            if model_final_prices.get(m)
-            else f"{i+1}. **{m}** — Price fetching from vault…"
+            f"{i+1}. **{m}** \u2014 \u20b9{_scraper_data.get(m, {}).get('price'):,}"
+            if _scraper_data.get(m, {}).get("price")
+            else f"{i+1}. **{m}** \u2014 Price fetching from Flipkart\u2026"
         )
         for i, m in enumerate(discovered_models)
     )
@@ -2191,33 +2213,41 @@ def devils_advocate_consensus_node(
     )
 
     system_prompt = SystemMessage(content=(
-        "You are a conversational, highly persuasive AI agent playing the Devil's Advocate. "
-        "Your goal is to talk the user OUT of making a purchase by exposing verified real-world "
-        "community bugs and flaws.\n\n"
-        "DO NOT just output a dry, bulleted list of complaints. Converse with the user naturally. "
-        "Weave the verified complaints into a flowing, narrative argument. Frame your sentences "
-        "as if you are a concerned tech expert giving a friend an honest warning.\n\n"
+        "You are an expert, highly persuasive tech consultant playing the Devil's Advocate. "
+        "Your goal is to give the user a clear, highly structured, and visually scannable warning "
+        "about verified real-world community bugs and flaws so they can make an informed decision.\n\n"
+        "RESPONSE STRUCTURE AND FORMATTING REQUIREMENTS:\n"
+        "1. OPENING WARNING: Start with a brief 1-2 sentence executive summary introducing the key warnings.\n"
+        "2. PRODUCT-BY-PRODUCT BREAKDOWN: Group complaints strictly under clean Markdown headings for each product "
+        "(e.g., '### 💻 Lenovo LOQ 15'). If comparing multiple products, give each model its own section. "
+        "If analyzing a single product, group by severity level (e.g. '#### 🚨 Critical Defects (Severity 4–5)').\n"
+        "3. STRUCTURED DEFECT BULLETS: Under each heading, present each flaw as a bullet point:\n"
+        "   - Start with a bold title summarizing the defect (e.g., '- **Motherboard Failure & GPU Sudden Death**: [1-2 sentence description]').\n"
+        "   - Place the citation tag on its own clean line directly below the defect bullet, formatted EXACTLY as:\n"
+        "     `🔴 [Sourced from N independent community reports - Severity Weight: X/5] (domain1, domain2)`\n"
+        "4. EXECUTIVE RISK MATRIX: End your analysis with a clean Markdown table summarizing all products:\n"
+        "   | Product | Primary Defect | Highest Severity | Risk Level |\n"
+        "   | :--- | :--- | :--- | :--- |\n"
+        "   | [Product Name] | [Flaw Name] | 🔴 5/5 | High |\n"
+        "5. CLOSING ADVICE: Conclude with 1 actionable sentence of advice (e.g., warranty or repasting recommendations).\n\n"
         "CRITICAL NUMERICAL CITATION RULE: You must NEVER print the literal character "
         "letter 'N' inside the verification bracket. You must physically look at the "
         "matching context items provided below, count the exact number of independent "
         "threads or unique comment snippets backing that specific hardware defect, and "
         "output that real integer value. "
-        "Example of correct format: '...and honestly, the thermal throttling is a "
-        "dealbreaker. 🔴 [Sourced from 3 independent community reports - Severity Weight: 5/5] "
-        "(reddit.com/r/Laptops). It essentially turns into a space heater...'. "
+        "Example of correct citation format:\n"
+        "🔴 [Sourced from 3 independent community reports - Severity Weight: 5/5] (reddit.com/r/IndianGaming, reddit.com/r/LenovoLOQ)\n"
         "If an issue appears only once in the context data, output '1 independent community "
-        "report'. The integer MUST reflect the actual count from the context — never a "
-        "placeholder.\n\n"
-        "SEVERITY FIRST: Lead your narrative with the highest-severity defects (Severity 4–5) "
-        "and naturally flow down to lesser issues as the conversation continues.\n\n"
+        "report'. The integer MUST reflect the actual count from the context — never a placeholder.\n\n"
+        "SEVERITY FIRST: Lead each product section with the highest-severity defects (Severity 4–5) first, "
+        "followed by lower-severity issues.\n\n"
         "STRICT GROUNDING: Answer strictly using the provided context. Only discuss defects "
         "that appear in the retrieved context. Do NOT hallucinate or extrapolate beyond the data.\n\n"
         "NO HEDGING: Do not soften verified defects with marketing language or brand apologies. "
-        "You are a concerned friend, not a PR spokesperson.\n\n"
+        "You are an honest tech advisor, not a PR spokesperson.\n\n"
         "PRODUCT SCOPE: Only discuss the products listed below. Do NOT introduce other models.\n\n"
-        "ZERO DATA POLICY: If no complaints exist for a specific inquiry, converse naturally "
-        "to state that the community hasn't reported issues regarding that yet — do not "
-        "hallucinate data points.\n\n"
+        "ZERO DATA POLICY: If no complaints exist for a specific inquiry, state naturally "
+        "that the community hasn't reported issues regarding that yet — do not hallucinate data points.\n\n"
         f"Products under review: {models_str}\n"
         f"Total verified community signals in vault: {total_discussions}\n"
         f"Coverage per product: {coverage_summary}"

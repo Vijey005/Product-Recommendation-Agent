@@ -4,30 +4,43 @@ import React from "react";
 import { motion } from "framer-motion";
 import { Product } from "@/types";
 import ProductCard from "./ProductCard";
+import { Button } from "@/components/ui/button";
 
 interface ProductGridProps {
   products: Product[];
   activeProductId: string | null;
   onSelectProduct: (productId: string) => void;
-  onCritiqueProduct: (productName: string) => void;
+  onCritiqueAll: () => void;
 }
 
 export default function ProductGrid({
   products,
   activeProductId,
   onSelectProduct,
-  onCritiqueProduct,
+  onCritiqueAll,
 }: ProductGridProps) {
   return (
     <div className="flex flex-col gap-4 h-full">
-      {/* Vault Header Info */}
-      <div className="flex flex-col px-1">
-        <h2 className="font-display font-bold text-lg text-text-primary">
-          Your Intelligence Vault
-        </h2>
-        <span className="text-xs text-text-secondary mt-0.5">
-          {products.length} products verified · Sourced in real-time
-        </span>
+      {/* Vault Header Info & Common Devil's Advocate Action */}
+      <div className="flex items-center justify-between px-1 gap-2 flex-wrap sm:flex-nowrap">
+        <div className="flex flex-col min-w-0">
+          <h2 className="font-display font-bold text-lg text-text-primary truncate">
+            Your Intelligence Vault
+          </h2>
+          <span className="text-xs text-text-secondary mt-0.5">
+            {products.length} products verified · Sourced in real-time
+          </span>
+        </div>
+
+        {/* Common Devil's Advocate Button */}
+        <Button
+          size="sm"
+          onClick={onCritiqueAll}
+          className="bg-danger/10 hover:bg-danger/25 border border-danger/40 hover:border-danger text-danger text-xs font-semibold px-3 h-9 gap-1.5 transition-all duration-200 shadow-sm group shrink-0"
+        >
+          <span className="group-hover:scale-125 transition-transform duration-200">👹</span>
+          Devil's Advocate
+        </Button>
       </div>
 
       {/* Stack of Cards */}
@@ -58,7 +71,6 @@ export default function ProductGrid({
               product={product}
               isActive={activeProductId === product.id}
               onSelect={() => onSelectProduct(product.id)}
-              onCritique={onCritiqueProduct}
             />
           </motion.div>
         ))}

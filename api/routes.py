@@ -109,11 +109,46 @@ class AdvocateRequest(BaseModel):
         description="UUID of an existing session that has completed the interview phase (is_rag_mode must be True).",
     )
     product_name: str = Field(
-        ...,
-        description="The specific product model to critique. Must be one of the retrieved_products for this session.",
+        default="all",
+        description="The product model to critique, or 'all' to critique all products in the vault.",
         min_length=1,
         max_length=200,
     )
+
+
+# In-memory store for active background forum harvest tasks (session_id -> Task)
+_background_harvest_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _trigger_background_forum_harvest(session_id: str, state: Dict[str, Any]) -> None:
+    """
+    Launch background forum harvest for all products in state immediately after vault creation.
+    """
+    if session_id in _background_harvest_tasks and not _background_harvest_tasks[session_id].done():
+        return
+
+    retrieved = state.get("retrieved_products", [])
+    product_names = [p.get("name") for p in retrieved if p.get("name")]
+    category = state.get("constraints", {}).get("product_category", "product")
+    if not product_names:
+        return
+
+    async def _run_harvest():
+        try:
+            logger.info("⚡ Background forum harvest started for session %s (%d products)", session_id, len(product_names))
+            vaulted = await asyncio.to_thread(
+                _harvest_and_triage_forum_data,
+                product_names,
+                category,
+                _get_tavily(),
+                _get_llm_base(),
+            )
+            logger.info("⚡ Background forum harvest complete for session %s: %d signals vaulted", session_id, vaulted)
+        except Exception as exc:
+            logger.warning("Background forum harvest error for session %s: %s", session_id, exc)
+
+    _background_harvest_tasks[session_id] = asyncio.create_task(_run_harvest())
+
 
 
 class SessionStateResponse(BaseModel):
@@ -290,22 +325,36 @@ async def _stream_interview_phase(
                             full_response += content
                             yield _sse_token(content)
 
-                # ── Node status signals ───────────────────────────────────────────
+                # ── Node status signals ─────────────────────────────────────────────
                 elif kind == "on_chain_start" and name == "search_and_vault_node":
                     yield _sse_status("🔍 Starting product search…")
 
                 elif kind == "on_chain_end" and name == "search_and_vault_node":
                     yield _sse_status("✅ Product vault ready!")
-                    
-                    # Extract the retrieved products from the node's output if possible
+
+                    # Extract the already-enriched products from the node's output.
+                    # The node now runs the Flipkart scraper in a background thread
+                    # in parallel with the spec harvest, so canonical_products already
+                    # contains price, imageUrl, rating, reviewCount, confidenceScore.
                     output_data = event.get("data", {}).get("output", {})
                     retrieved_products = output_data.get("retrieved_products", []) if isinstance(output_data, dict) else []
+
+                    if retrieved_products:
+                        # Data already enriched by the parallel background scraper in nodes.py.
+                        # Just persist to state.
+                        state["retrieved_products"] = retrieved_products
+                        SessionStore[session_id] = state
+                        yield _sse_status(f"✨ {len(retrieved_products)} product(s) ready — live prices, images & ratings loaded!")
+
                     yield _sse_vault_ready(products=retrieved_products, count=len(retrieved_products))
 
                 # ── Capture final graph output ────────────────────────────────────
                 elif kind == "on_chain_end" and name == "LangGraph":
                     output = event.get("data", {}).get("output", {})
                     if isinstance(output, dict):
+                        # Preserve enriched products so state update doesn't overwrite them with un-enriched canonical_products
+                        if "retrieved_products" in state:
+                            output["retrieved_products"] = state["retrieved_products"]
                         final_state = output
 
     except Exception as exc:
@@ -339,6 +388,10 @@ async def _stream_interview_phase(
 
     # Always persist the canonical fields even if no LangGraph output captured
     SessionStore[session_id] = state
+
+    # Trigger automatic background forum harvest for all products once vault is ready
+    if state.get("is_rag_mode") or state.get("retrieved_products"):
+        _trigger_background_forum_harvest(session_id, state)
 
     yield _sse_done({
         "is_rag_mode":         state.get("is_rag_mode", False),
@@ -539,8 +592,15 @@ async def _stream_rag_phase(
                 full_response += content
                 yield _sse_token(content)
     except Exception as exc:
-        logger.exception("RAG stream error for session %s", session_id)
-        yield _sse_error(f"LLM stream error: {exc}")
+        logger.exception("RAG stream error for session %s: %s", session_id, exc)
+        err_msg = str(exc)
+        if "504" in err_msg or "DEADLINE_EXCEEDED" in err_msg or "TimeoutError" in err_msg:
+            yield _sse_token("\n\n⚠️ *The query took longer than expected to complete. Please ask a more specific question or try again.*")
+        else:
+            yield _sse_error(f"LLM stream error: {exc}")
+        if full_response:
+            state["chat_history"].append(AIMessage(content=full_response))
+            SessionStore[session_id] = state
         return
 
     # ── Persist AI response to session history ────────────────────────────────
@@ -572,21 +632,32 @@ async def _stream_advocate_phase(
     product_names = [p.get("name") for p in retrieved_products if p.get("name")]
     category = state.get("constraints", {}).get("product_category", "product")
 
-    # ── Phase 1: Forum harvest (blocking I/O + 3-second Gemini rate gaps) ─────
-    yield _sse_status(f"📡 Harvesting community feedback for {product_name}…")
+    # ── Phase 1: Forum harvest ────────────────────────────────────────────────
+    task = _background_harvest_tasks.get(session_id)
+    if task and not task.done():
+        yield _sse_status("📡 Finalising background community feedback harvest for all products…")
+        try:
+            await task
+            yield _sse_status("✅ Background harvest ready. Analysing community feedback…")
+        except Exception as exc:
+            logger.warning("Error waiting for background harvest for session %s: %s", session_id, exc)
+    else:
+        target_products = product_names if (not product_name or product_name.lower() == "all") else [product_name]
+        display_target = "all products" if len(target_products) > 1 else (target_products[0] if target_products else "all products")
+        yield _sse_status(f"📡 Verifying community feedback for {display_target}…")
 
-    try:
-        vaulted_count = await asyncio.to_thread(
-            _harvest_and_triage_forum_data,
-            [product_name],
-            category,
-            _get_tavily(),
-            _get_llm_base(),
-        )
-        yield _sse_status(f"✅ {vaulted_count} critique signals vaulted. Analysing…")
-    except Exception as exc:
-        logger.warning("Forum harvest error for %s: %s", product_name, exc)
-        yield _sse_status(f"⚠️ Forum harvest encountered an issue: {exc}. Proceeding with cached data…")
+        try:
+            vaulted_count = await asyncio.to_thread(
+                _harvest_and_triage_forum_data,
+                target_products,
+                category,
+                _get_tavily(),
+                _get_llm_base(),
+            )
+            yield _sse_status(f"✅ {vaulted_count} critique signals in vault. Analysing…")
+        except Exception as exc:
+            logger.warning("Forum harvest error for %s: %s", display_target, exc)
+            yield _sse_status(f"⚠️ Forum harvest encountered an issue: {exc}. Proceeding with vaulted data…")
 
     # ── Phase 2: Build advocate context (mirrors nodes.py L1894-1975) ─────────
     def _build_advocate_context():
@@ -678,33 +749,41 @@ async def _stream_advocate_phase(
 
     from langchain_core.messages import SystemMessage
     system_prompt_text = (
-        "You are a conversational, highly persuasive AI agent playing the Devil's Advocate. "
-        "Your goal is to talk the user OUT of making a purchase by exposing verified real-world "
-        "community bugs and flaws.\n\n"
-        "DO NOT just output a dry, bulleted list of complaints. Converse with the user naturally. "
-        "Weave the verified complaints into a flowing, narrative argument. Frame your sentences "
-        "as if you are a concerned tech expert giving a friend an honest warning.\n\n"
+        "You are an expert, highly persuasive tech consultant playing the Devil's Advocate. "
+        "Your goal is to give the user a clear, highly structured, and visually scannable warning "
+        "about verified real-world community bugs and flaws so they can make an informed decision.\n\n"
+        "RESPONSE STRUCTURE AND FORMATTING REQUIREMENTS:\n"
+        "1. OPENING WARNING: Start with a brief 1-2 sentence executive summary introducing the key warnings.\n"
+        "2. PRODUCT-BY-PRODUCT BREAKDOWN: Group complaints strictly under clean Markdown headings for each product "
+        "(e.g., '### 💻 Lenovo LOQ 15'). If comparing multiple products, give each model its own section. "
+        "If analyzing a single product, group by severity level (e.g. '#### 🚨 Critical Defects (Severity 4–5)').\n"
+        "3. STRUCTURED DEFECT BULLETS: Under each heading, present each flaw as a bullet point:\n"
+        "   - Start with a bold title summarizing the defect (e.g., '- **Motherboard Failure & GPU Sudden Death**: [1-2 sentence description]').\n"
+        "   - Place the citation tag on its own clean line directly below the defect bullet, formatted EXACTLY as:\n"
+        "     `🔴 [Sourced from N independent community reports - Severity Weight: X/5] (domain1, domain2)`\n"
+        "4. EXECUTIVE RISK MATRIX: End your analysis with a clean Markdown table summarizing all products:\n"
+        "   | Product | Primary Defect | Highest Severity | Risk Level |\n"
+        "   | :--- | :--- | :--- | :--- |\n"
+        "   | [Product Name] | [Flaw Name] | 🔴 5/5 | High |\n"
+        "5. CLOSING ADVICE: Conclude with 1 actionable sentence of advice (e.g., warranty or repasting recommendations).\n\n"
         "CRITICAL NUMERICAL CITATION RULE: You must NEVER print the literal character "
         "letter 'N' inside the verification bracket. You must physically look at the "
         "matching context items provided below, count the exact number of independent "
         "threads or unique comment snippets backing that specific hardware defect, and "
         "output that real integer value. "
-        "Example of correct format: '...and honestly, the thermal throttling is a "
-        "dealbreaker. 🔴 [Sourced from 3 independent community reports - Severity Weight: 5/5] "
-        "(reddit.com/r/Laptops). It essentially turns into a space heater...'. "
+        "Example of correct citation format:\n"
+        "🔴 [Sourced from 3 independent community reports - Severity Weight: 5/5] (reddit.com/r/IndianGaming, reddit.com/r/LenovoLOQ)\n"
         "If an issue appears only once in the context data, output '1 independent community "
-        "report'. The integer MUST reflect the actual count from the context — never a "
-        "placeholder.\n\n"
-        "SEVERITY FIRST: Lead your narrative with the highest-severity defects (Severity 4–5) "
-        "and naturally flow down to lesser issues as the conversation continues.\n\n"
+        "report'. The integer MUST reflect the actual count from the context — never a placeholder.\n\n"
+        "SEVERITY FIRST: Lead each product section with the highest-severity defects (Severity 4–5) first, "
+        "followed by lower-severity issues.\n\n"
         "STRICT GROUNDING: Answer strictly using the provided context. Only discuss defects "
         "that appear in the retrieved context. Do NOT hallucinate or extrapolate beyond the data.\n\n"
         "NO HEDGING: Do not soften verified defects with marketing language or brand apologies. "
-        "You are a concerned friend, not a PR spokesperson.\n\n"
+        "You are an honest tech advisor, not a PR spokesperson.\n\n"
         "PRODUCT SCOPE: Only discuss the products listed below. Do NOT introduce other models.\n\n"
-        "ZERO DATA POLICY: If no complaints exist for a specific inquiry, converse naturally "
-        "to state that the community hasn't reported issues regarding that yet — do not "
-        "hallucinate data points.\n\n"
+        "ZERO DATA POLICY: If no complaints exist for a specific inquiry, state naturally "
+        "that the community hasn't reported issues regarding that yet — do not hallucinate data points.\n\n"
         f"Products under review: {models_str}\n"
         f"Total verified community signals in vault: {total_discussions}\n"
         f"Coverage per product: {coverage_summary}"
@@ -738,8 +817,16 @@ async def _stream_advocate_phase(
                 full_response += content
                 yield _sse_token(content)
     except Exception as exc:
-        logger.exception("Advocate stream error for session %s", session_id)
-        yield _sse_error(f"Advocate LLM stream error: {exc}")
+        logger.exception("Advocate stream error for session %s: %s", session_id, exc)
+        err_msg = str(exc)
+        if "504" in err_msg or "DEADLINE_EXCEEDED" in err_msg or "TimeoutError" in err_msg:
+            yield _sse_token("\n\n⚠️ *Community critique response timed out. Please try again.*")
+        else:
+            yield _sse_error(f"Advocate LLM stream error: {exc}")
+        if full_response:
+            state["chat_history"].append(HumanMessage(content=user_query))
+            state["chat_history"].append(AIMessage(content=full_response))
+            SessionStore[session_id] = state
         return
 
     # ── Persist advocate response to session history ───────────────────────────
@@ -939,8 +1026,10 @@ async def advocate(
             ),
         )
 
-    # Use the product_name as the user query for context
-    user_query = f"What are the real problems with the {product_name}?"
+    if not product_name or product_name.lower() == "all":
+        user_query = "What are the real problems, defects, and community complaints across all products in the vault?"
+    else:
+        user_query = f"What are the real problems with the {product_name}?"
 
     generator = _stream_advocate_phase(
         session_id=session_id,

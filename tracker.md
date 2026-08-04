@@ -325,3 +325,33 @@ Guarantee that product recommendations respect user budget ceilings by validatin
   - **Removed Fabricated Fallback:** Replaced the hardcoded `75000 + (idx * 5000)` fallback in `mapBackendProducts` with exact backend values.
 - [advisor-ui/src/components/vault/ProductCard.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductCard.tsx):
   - **Null-Aware Rendering:** Implemented an animated `"Fetching price…"` placeholder when pricing is missing, while safely rendering known prices in Indian number format (`en-IN`).
+
+---
+
+## Phase 3.3: Hybrid Live Product Scraping Engine & Structured Devil's Advocate Formatting
+**Status:** Completed  
+**Date:** August 4, 2026  
+
+### 🎯 Goal
+Integrate a headless Playwright background scraper to enrich candidate products with real-time Indian pricing, high-resolution CDN images, star ratings, and review counts from Flipkart (with Amazon India fallback). Restructure Devil's Advocate community critique outputs into clean, scannable Markdown featuring executive risk matrices and precise numerical citations.
+
+### 📝 Files Created & Changed
+- [requirements.txt](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/requirements.txt): Added `playwright>=1.40.0` dependency.
+- [agent/scraper.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/scraper.py): Created `scrape_products_sequential()` module. Runs a headless Playwright Chromium instance inside a separate Python subprocess to safely avoid `asyncio` event loop conflicts with FastAPI/Uvicorn.
+- [scrape.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/scrape.py): Created standalone test script for Flipkart data extraction.
+- [agent/nodes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/agent/nodes.py):
+  - **Scraper Thread Integration:** Spawned background thread in `search_and_vault_node` to execute Playwright scraping concurrently alongside Tavily spec harvesting. Joined before canonical product list assembly.
+  - **Dynamic Confidence Scoring:** Computed `confidenceScore` (50–100) per product based on vector chunk volume and spec card availability.
+  - **Structured Advocate Prompt:** Refactored `devils_advocate_consensus_node` system prompt to enforce a 5-part structure: Executive Warning, Product-by-Product breakdown, bolded defect bullet points with standalone `🔴 [Sourced from N independent community reports - Severity Weight: X/5] (sources)` citations, Markdown Risk Matrix table, and Actionable Closing Advice.
+- [api/server.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/server.py): Suppressed noisy `urllib3.connectionpool` overflow warnings emitted during concurrent Tavily spec harvesting threads.
+- [api/routes.py](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/api/routes.py): Added session history fallback saving on Advocate stream timeouts to preserve user turn context.
+- [advisor-ui/src/app/providers.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/app/providers.tsx): Synchronized `isDevilMode` state directly with `next-themes` and `document.documentElement` CSS classes.
+- [advisor-ui/src/components/vault/ProductCard.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductCard.tsx): Rendered live star ratings and formatted review counts. Removed individual card critique buttons.
+- [advisor-ui/src/components/vault/ProductGrid.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/vault/ProductGrid.tsx): Added top-level "Devil's Advocate" action header button to critique all vaulted products simultaneously.
+- [advisor-ui/src/hooks/useSSE.ts](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/hooks/useSSE.ts): Updated fallback and mock critique streams to match the new structured warning format and risk matrix.
+- [advisor-ui/src/components/devil/CritiqueReport.tsx](file:///c:/Users/Vijey/Documents/Product%20Recommendation%20Agent/advisor-ui/src/components/devil/CritiqueReport.tsx): Removed deprecated component.
+
+### 🧠 Technical Decisions & Notes
+- **Subprocess Playwright Execution:** Playwright's `sync_playwright` invokes its own event loop under the hood, which throws `NotImplementedError` when called inside FastAPI's running `asyncio` loop. Spawning a worker via `subprocess.run([sys.executable, "-c", ...])` isolates the event loop cleanly.
+- **Concurrent Spec Harvesting & Scraping:** The Flipkart scraper runs in a background daemon thread while Tavily spec harvesting executes. Joining the thread before returning `canonical_products` ensures zero additional user wait time when spec harvesting takes longer than scraping.
+

@@ -2,11 +2,13 @@
 
 import React, { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
+import { useAdvisorStore } from "@/store/advisorStore";
 import { Sun, Moon, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function ThemeToggle() {
   const { theme, setTheme } = useTheme();
+  const { isDevilMode, setDevilMode } = useAdvisorStore();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -18,6 +20,12 @@ export default function ThemeToggle() {
   }
 
   const cycleTheme = () => {
+    if (isDevilMode) {
+      setDevilMode(false);
+    }
+    if (typeof document !== "undefined") {
+      document.documentElement.classList.remove("devil-mode");
+    }
     if (theme === "light") {
       setTheme("dark");
     } else {

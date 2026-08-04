@@ -12,24 +12,20 @@ interface ProductCardProps {
   product: Product;
   isActive: boolean;
   onSelect: () => void;
-  onCritique: (productName: string) => void;
 }
 
 export default function ProductCard({
   product,
   isActive,
   onSelect,
-  onCritique,
 }: ProductCardProps) {
   // Format rating stars
-  const rating = typeof product.rating === "number" ? product.rating : 4.5;
-  const fullStars = Math.floor(rating);
-  const hasHalfStar = rating % 1 !== 0;
-
-  const handleCritiqueClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onCritique(product.name);
-  };
+  const displayRating = typeof product.rating === "number" && product.rating > 0 ? product.rating : 4.5;
+  const fullStars = Math.floor(displayRating);
+  const hasHalfStar = displayRating % 1 !== 0;
+  const reviewCountFormatted = typeof product.reviewCount === "number" && product.reviewCount > 0
+    ? product.reviewCount.toLocaleString()
+    : null;
 
   return (
     <motion.div
@@ -89,8 +85,12 @@ export default function ProductCard({
                 />
               ))}
             </div>
-            <span>{rating}</span>
-            <span className="text-text-muted">({product.reviewCount || 42})</span>
+            <span>{displayRating}</span>
+            {reviewCountFormatted ? (
+              <span className="text-text-muted">({reviewCountFormatted})</span>
+            ) : (
+              <span className="text-text-muted italic">(No ratings)</span>
+            )}
           </div>
         </div>
       </div>
@@ -112,23 +112,12 @@ export default function ProductCard({
             </span>
           )}
         </div>
-        <ConfidenceScore score={product.confidenceScore || 85} />
+        <ConfidenceScore score={product.confidenceScore > 0 ? product.confidenceScore : 70} />
       </div>
 
       {/* Footer actions and badges */}
       <div className="flex items-center justify-between gap-2 border-t border-border-default/40 pt-3 flex-wrap sm:flex-nowrap">
         <DataSourceBadge source={product.dataSource || "live_scrape"} />
-
-        {/* Action Button: Critique */}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleCritiqueClick}
-          className="border-border-bright hover:border-danger hover:bg-danger/10 text-text-secondary hover:text-danger text-xs font-semibold px-2.5 h-8 gap-1.5 transition-colors duration-200 group"
-        >
-          <span className="group-hover:animate-bounce">👹</span>
-          Critique This
-        </Button>
       </div>
     </motion.div>
   );
